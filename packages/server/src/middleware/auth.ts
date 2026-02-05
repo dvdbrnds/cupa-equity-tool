@@ -26,7 +26,8 @@ export function generateToken(user: User): string {
     role: user.role,
     division: user.division,
   };
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN as string | number });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN } as any);
 }
 
 export function verifyToken(token: string): JwtPayload {
