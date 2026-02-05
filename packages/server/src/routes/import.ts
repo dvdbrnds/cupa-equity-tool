@@ -64,3 +64,65 @@ importRouter.post('/cupa-salary', upload.single('file'), async (req: Request, re
   const result: ImportResult = await importCupaSalaryData(req.file.buffer, dataYear, sheetName);
   res.json(result);
 });
+
+// Generate fake compensation data for testing
+importRouter.post('/generate-fake-compensation', async (_req: Request, res: Response) => {
+  const { dbAll, dbRun, dbGet, saveDatabase } = await import('../db/init.js');
+  
+  // Get all positions
+  const positions = dbAll<{ id: number; cupa_code: string | null }>(`
+    SELECT id, cupa_code FROM position_mappings
+  `);
+  
+  let updated = 0;
+  
+  for (const pos of positions) {
+    // Generate realistic salary based on CUPA median if available
+    let baseSalary = 45000 + Math.random() * 60000; // Random between $45k-$105k
+    
+    if (pos.cupa_code) {
+      const cupaSalary = dbGet<{ median_salary: number }>(`
+        SELECT median_salary FROM cupa_salary_data WHERE cupa_code = ? LIMIT 1
+      `, [pos.cupa_code]);
+      
+      if (cupaSalary) {
+        // Base salary around 80-110% of CUPA median
+        baseSalary = cupaSalary.median_salary * (0.8 + Math.random() * 0.3);
+      }
+    }
+    
+    const salary = Math.round(baseSalary / 100) * 100; // Round to nearest $100
+    
+    // Random hire date between 2018 and 2024
+    const year = 2018 + Math.floor(Math.random() * 7);
+    const month = Math.floor(Math.random() * 12) + 1;
+    const day = Math.floor(Math.random() * 28) + 1;
+    const hireDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    
+    // Most are full-time, some part-time
+    const fte = Math.random() > 0.85 ? (0.5 + Math.random() * 0.4) : 1.0;
+    
+    // Appointment months - mostly 12, some 10
+    const appointmentMonths = Math.random() > 0.2 ? 12 : 10;
+    
+    dbRun(`
+      UPDATE position_mappings SET 
+        current_salary = ?,
+        hire_date = ?,
+        fte = ?,
+        appointment_months = ?,
+        compensation_type = 'salaried',
+        has_housing_benefit = 0
+      WHERE id = ?
+    `, [salary, hireDate, Math.round(fte * 100) / 100, appointmentMonths, pos.id]);
+    
+    updated++;
+  }
+  
+  saveDatabase();
+  
+  res.json({ 
+    success: true, 
+    message: `Generated fake compensation data for ${updated} positions` 
+  });
+});
