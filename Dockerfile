@@ -26,6 +26,9 @@ FROM node:20-alpine AS production
 
 WORKDIR /app
 
+# Install curl for health check
+RUN apk add --no-cache curl
+
 # Install production dependencies only
 COPY package*.json ./
 COPY packages/shared/package*.json ./packages/shared/
@@ -47,7 +50,7 @@ ENV DATA_DIR=/app/data
 
 EXPOSE 3001
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3001/api/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:3001/api/health || exit 1
 
 CMD ["node", "packages/server/dist/index.js"]
