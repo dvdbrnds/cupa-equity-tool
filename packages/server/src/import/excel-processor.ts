@@ -460,8 +460,8 @@ export async function importCompensationData(buffer: Buffer, sheetName?: string)
 
 // Column mappings for CUPA salary data import
 const CUPA_SALARY_COLUMN_MAPPINGS = {
-  cupaCode: ['CUPA #', 'CUPA Code', 'Position Number', 'Code', 'CUPA'],
-  medianSalary: ['Median', 'Median Salary', '50th Percentile', 'P50', 'Median Pay'],
+  cupaCode: ['CUPA #', 'CUPA Code', 'Position Number', 'Code', 'CUPA', 'Code/Title'],
+  medianSalary: ['Median', 'Median Salary', '50th Percentile', 'P50', 'Median Pay', 'Moravian', 'Budget'],
   percentile25: ['25th Percentile', 'P25', '25th', 'Q1'],
   percentile75: ['75th Percentile', 'P75', '75th', 'Q3'],
   sampleCount: ['N', 'Count', 'Sample', 'Sample Size', 'Institutions'],
@@ -497,20 +497,39 @@ export async function importCupaSalaryData(buffer: Buffer, dataYear: string, she
     return { success: false, imported: 0, skipped: 0, errors: [{ row: 1, field: 'Median Salary', message: `Median Salary column not found. Available headers: ${headers.join(', ')}` }] };
   }
 
+  // Detect if row 2 is a sub-header row (contains "Median" labels) - skip it if so
+  let startRow = 1;
+  if (data.length > 1) {
+    const row2 = data[1];
+    const row2Str = row2.map(c => String(c || '').toLowerCase()).join(' ');
+    if (row2Str.includes('median')) {
+      startRow = 2; // Skip the sub-header row
+    }
+  }
+
   const errors: ImportValidationError[] = [];
   let imported = 0;
   let skipped = 0;
 
-  for (let i = 1; i < data.length; i++) {
+  for (let i = startRow; i < data.length; i++) {
     const row = data[i];
     const rowNum = i + 1;
 
-    const cupaCode = normalizeCupaCode(row[colCupaCode]);
+    // Handle Code/Title format like "[101000] Chief Executive Officer..."
+    let codeValue = row[colCupaCode];
+    if (typeof codeValue === 'string' && codeValue.startsWith('[')) {
+      const match = codeValue.match(/^\[(\d+)\]/);
+      if (match) {
+        codeValue = match[1];
+      }
+    }
+
+    const cupaCode = normalizeCupaCode(codeValue);
     if (!cupaCode) { skipped++; continue; }
 
     const medianSalary = parseNumber(row[colMedian]);
     if (medianSalary === null || medianSalary <= 0) {
-      errors.push({ row: rowNum, field: 'median_salary', message: `Invalid median salary for CUPA code ${cupaCode}` });
+      // Skip rows without salary data (category headers)
       skipped++;
       continue;
     }
