@@ -60,18 +60,15 @@ authRouter.post('/login', (req: Request, res: Response) => {
   // Set httpOnly cookie
   // Check if request came through HTTPS (via X-Forwarded-Proto from reverse proxy)
   const forwardedProto = req.headers['x-forwarded-proto'];
-  const isSecure = req.secure || forwardedProto === 'https';
+  const isSecure = forwardedProto === 'https' || req.secure;
   
-  console.log('Login cookie settings:', { 
-    reqSecure: req.secure, 
-    forwardedProto, 
-    isSecure,
-    nodeEnv: process.env.NODE_ENV 
-  });
+  // TEMP: Allow non-secure cookies for dev until proper domain is configured
+  // TODO: Remove ALLOW_INSECURE_COOKIES env var once cupa.moravian.edu has SSL
+  const useSecureCookie = process.env.ALLOW_INSECURE_COOKIES === 'true' ? false : isSecure;
   
   res.cookie('token', token, {
     httpOnly: true,
-    secure: isSecure,
+    secure: useSecureCookie,
     sameSite: 'lax',
     maxAge: 8 * 60 * 60 * 1000, // 8 hours
   });
