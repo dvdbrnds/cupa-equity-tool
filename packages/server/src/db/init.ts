@@ -329,7 +329,7 @@ function createTables(database: SqlJsDatabase): void {
   database.run('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)');
   database.run('CREATE INDEX IF NOT EXISTS idx_users_division ON users(division)');
   database.run('CREATE INDEX IF NOT EXISTS idx_vp_roles_code ON vp_roles(code)');
-  database.run('CREATE INDEX IF NOT EXISTS idx_vp_roles_assigned_user ON vp_roles(assigned_user_id)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_vp_roles_assigned_email ON vp_roles(assigned_email)');
   database.run('CREATE INDEX IF NOT EXISTS idx_cupa_salary_data_code ON cupa_salary_data(cupa_code)');
   database.run('CREATE INDEX IF NOT EXISTS idx_cupa_salary_data_year ON cupa_salary_data(data_year)');
   database.run('CREATE INDEX IF NOT EXISTS idx_equity_analysis_position ON equity_analysis(position_mapping_id)');
