@@ -1,6 +1,5 @@
 import { NavLink } from 'react-router-dom';
 import {
-  LayoutDashboard,
   Users,
   FileText,
   History,
@@ -8,6 +7,7 @@ import {
   BookOpen,
   Building2,
   DollarSign,
+  ClipboardList,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/context/AuthContext';
@@ -41,6 +41,12 @@ const navItems: NavItem[] = [
     icon: History,
   },
   {
+    label: 'Review Cycles',
+    href: '/review-cycles',
+    icon: ClipboardList,
+    roles: ['system_admin', 'hr_admin'],
+  },
+  {
     label: 'Import Data',
     href: '/import',
     icon: Upload,
@@ -64,8 +70,10 @@ export function Sidebar() {
   const { user } = useAuth();
 
   const filteredNavItems = navItems.filter(item => {
-    if (!item.roles) return true;
-    return user && item.roles.includes(user.role);
+    if (item.roles) {
+      return user && item.roles.includes(user.role);
+    }
+    return true;
   });
 
   return (

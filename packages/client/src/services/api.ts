@@ -14,6 +14,10 @@ import type {
   EquitySummaryByVp,
   EquityAnalysisSummary,
   BudgetAllocation,
+  EquityReviewCycleWithStats,
+  VpReviewStatusRecord,
+  EmployeeFeedbackWithDetails,
+  EmployeeFeedbackType,
 } from '@cupa/shared';
 
 const API_BASE = '/api';
@@ -551,4 +555,209 @@ export const vpRolesApi = {
     fetchApi<{ message: string; created: number; updated: number }>('/vp-roles/sync', {
       method: 'POST',
     }),
+};
+
+// Review Cycles API (Equity Review Workflow)
+export const reviewCyclesApi = {
+  // Cycle management
+  list: (includeArchived = false) =>
+    fetchApi<EquityReviewCycleWithStats[]>(`/review-cycles?includeArchived=${includeArchived}`),
+
+  get: (id: number) =>
+    fetchApi<{
+      cycle: EquityReviewCycleWithStats;
+      vpStatuses: VpReviewStatusRecord[];
+    }>(`/review-cycles/${id}`),
+
+  create: (data: {
+    name: string;
+    fiscalYear: string;
+    totalBudget?: number;
+    cupaDataYear?: string;
+    deadline?: string;
+    notes?: string;
+  }) =>
+    fetchApi<{ success: boolean; id: number; message: string }>('/review-cycles', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  update: (id: number, data: {
+    name?: string;
+    totalBudget?: number;
+    cupaDataYear?: string;
+    deadline?: string;
+    notes?: string;
+    status?: string;
+  }) =>
+    fetchApi<{ success: boolean; message: string }>(`/review-cycles/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  delete: (id: number) =>
+    fetchApi<{ success: boolean; message: string }>(`/review-cycles/${id}`, {
+      method: 'DELETE',
+    }),
+
+  initializeAllocations: (id: number, totalBudget?: number) =>
+    fetchApi<{
+      success: boolean;
+      message: string;
+      allocations: Array<{
+        vpStem: string;
+        vpTitle: string | null;
+        totalGap: number;
+        gapPercentage: number;
+        allocatedBudget: number;
+        positionCount: number;
+      }>;
+    }>(`/review-cycles/${id}/initialize-allocations`, {
+      method: 'POST',
+      body: JSON.stringify({ totalBudget }),
+    }),
+
+  updateVpAllocation: (id: number, vpStem: string, allocatedBudget: number) =>
+    fetchApi<{ success: boolean; message: string; vpStem: string; allocatedBudget: number }>(
+      `/review-cycles/${id}/vp-allocation/${encodeURIComponent(vpStem)}`,
+      { method: 'PATCH', body: JSON.stringify({ allocatedBudget }) }
+    ),
+
+  sendToVps: (id: number, vpStems?: string[]) =>
+    fetchApi<{ success: boolean; message: string; sentCount: number }>(
+      `/review-cycles/${id}/send-to-vps`,
+      { method: 'POST', body: JSON.stringify({ vpStems }) }
+    ),
+
+  finalize: (id: number) =>
+    fetchApi<{ success: boolean; message: string }>(`/review-cycles/${id}/finalize`, {
+      method: 'POST',
+    }),
+
+  markImplemented: (id: number, notes?: string) =>
+    fetchApi<{ success: boolean; message: string }>(`/review-cycles/${id}/mark-implemented`, {
+      method: 'POST',
+      body: JSON.stringify({ notes }),
+    }),
+
+  archive: (id: number) =>
+    fetchApi<{ success: boolean; message: string }>(`/review-cycles/${id}/archive`, {
+      method: 'POST',
+    }),
+
+  // VP review actions
+  getMyPendingReviews: () =>
+    fetchApi<Array<{
+      id: number;
+      cycleId: number;
+      cycleName: string;
+      fiscalYear: string;
+      vpStem: string;
+      vpTitle: string | null;
+      status: string;
+      allocatedBudget: number | null;
+      proposedTotal: number | null;
+      employeeCount: number | null;
+      deadline: string | null;
+      sentAt: string | null;
+      reviewedAt: string | null;
+      cycleTotalBudget: number | null;
+      vpSupplementalOffer: number | null;
+      supplementalOfferNotes: string | null;
+      supplementalOfferedAt: string | null;
+    }>>('/review-cycles/my-reviews/pending'),
+
+  vpApprove: (cycleId: number, notes?: string) =>
+    fetchApi<{ success: boolean; message: string; proposedTotal: number }>(
+      `/review-cycles/${cycleId}/vp-approve`,
+      { method: 'POST', body: JSON.stringify({ notes }) }
+    ),
+
+  vpRequestChanges: (cycleId: number, notes: string) =>
+    fetchApi<{ success: boolean; message: string }>(
+      `/review-cycles/${cycleId}/vp-request-changes`,
+      { method: 'POST', body: JSON.stringify({ notes }) }
+    ),
+
+  vpSubmitSupplementalOffer: (cycleId: number, amount: number, notes?: string) =>
+    fetchApi<{ success: boolean; message: string; amount: number; offeredAt: string }>(
+      `/review-cycles/${cycleId}/vp-supplemental-offer`,
+      { method: 'POST', body: JSON.stringify({ amount, notes }) }
+    ),
+
+  vpWithdrawSupplementalOffer: (cycleId: number) =>
+    fetchApi<{ success: boolean; message: string }>(
+      `/review-cycles/${cycleId}/vp-supplemental-offer`,
+      { method: 'DELETE' }
+    ),
+
+  // Employee feedback
+  getEmployeeFeedback: (cycleId: number) =>
+    fetchApi<EmployeeFeedbackWithDetails[]>(`/review-cycles/${cycleId}/employee-feedback`),
+
+  saveEmployeeFeedback: (
+    cycleId: number,
+    positionMappingId: number,
+    feedbackType: EmployeeFeedbackType,
+    adjustedRaise?: number,
+    notes?: string
+  ) =>
+    fetchApi<{ success: boolean; message: string }>(
+      `/review-cycles/${cycleId}/employee-feedback`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ positionMappingId, feedbackType, adjustedRaise, notes }),
+      }
+    ),
+
+  deleteEmployeeFeedback: (cycleId: number, positionMappingId: number) =>
+    fetchApi<{ success: boolean; message: string }>(
+      `/review-cycles/${cycleId}/employee-feedback/${positionMappingId}`,
+      { method: 'DELETE' }
+    ),
+
+  // VP budget allocation during review
+  vpAutoAllocate: (cycleId: number, totalBudget: number) =>
+    fetchApi<{ success: boolean; message: string; totalBudget: number; allocated: number; positionsUpdated: number }>(
+      `/review-cycles/${cycleId}/vp-auto-allocate`,
+      { method: 'POST', body: JSON.stringify({ totalBudget }) }
+    ),
+
+  vpClearRaises: (cycleId: number) =>
+    fetchApi<{ success: boolean; message: string; cleared: number }>(
+      `/review-cycles/${cycleId}/vp-clear-raises`,
+      { method: 'POST' }
+    ),
+
+  // HR actions
+  markVpRevised: (cycleId: number, vpStem: string, notes?: string) =>
+    fetchApi<{ success: boolean; message: string }>(
+      `/review-cycles/${cycleId}/mark-revised/${vpStem}`,
+      { method: 'POST', body: JSON.stringify({ notes }) }
+    ),
+
+  hrApproveVp: (cycleId: number, vpStem: string, notes?: string) =>
+    fetchApi<{ success: boolean; message: string }>(
+      `/review-cycles/${cycleId}/hr-approve-vp/${vpStem}`,
+      { method: 'POST', body: JSON.stringify({ notes }) }
+    ),
+
+  // PC (President's Cabinet) workflow
+  submitToPc: (cycleId: number, notes?: string) =>
+    fetchApi<{ success: boolean; message: string; totalProposed: number; employeeCount: number }>(
+      `/review-cycles/${cycleId}/submit-to-pc`,
+      { method: 'POST', body: JSON.stringify({ notes }) }
+    ),
+
+  recordPcVote: (cycleId: number, result: 'approved' | 'rejected', voteDate?: string, notes?: string) =>
+    fetchApi<{ success: boolean; message: string; status: string }>(
+      `/review-cycles/${cycleId}/record-pc-vote`,
+      { method: 'POST', body: JSON.stringify({ result, voteDate, notes }) }
+    ),
+
+  ratify: (cycleId: number, notes?: string) =>
+    fetchApi<{ success: boolean; message: string }>(
+      `/review-cycles/${cycleId}/ratify`,
+      { method: 'POST', body: JSON.stringify({ notes }) }
+    ),
 };

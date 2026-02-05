@@ -239,6 +239,58 @@ function createTables(database: SqlJsDatabase): void {
     )
   `);
 
+  database.run(`
+    -- Equity review cycles (formal review workflow)
+    CREATE TABLE IF NOT EXISTS equity_review_cycles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      fiscal_year TEXT NOT NULL,
+      total_budget REAL,
+      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'calculating', 'pending_vp_review', 'vp_review_in_progress', 'hr_final_review', 'approved', 'implemented', 'archived')),
+      cupa_data_year TEXT,
+      deadline TEXT,
+      created_by_id INTEGER NOT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      notes TEXT
+    )
+  `);
+
+  database.run(`
+    -- VP review status within a cycle (one per VP per cycle)
+    CREATE TABLE IF NOT EXISTS vp_review_status (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cycle_id INTEGER NOT NULL REFERENCES equity_review_cycles(id) ON DELETE CASCADE,
+      vp_stem TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_review', 'approved', 'changes_requested', 'hr_revised')),
+      allocated_budget REAL,
+      proposed_total REAL,
+      employee_count INTEGER,
+      sent_at TEXT,
+      reviewed_at TEXT,
+      reviewed_by_id INTEGER REFERENCES users(id),
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(cycle_id, vp_stem)
+    )
+  `);
+
+  database.run(`
+    -- Employee-level feedback from VPs during review
+    CREATE TABLE IF NOT EXISTS employee_feedback (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cycle_id INTEGER NOT NULL REFERENCES equity_review_cycles(id) ON DELETE CASCADE,
+      position_mapping_id INTEGER NOT NULL REFERENCES position_mappings(id) ON DELETE CASCADE,
+      feedback_type TEXT NOT NULL CHECK (feedback_type IN ('approve', 'increase', 'decrease', 'defer', 'discuss')),
+      adjusted_raise REAL,
+      notes TEXT,
+      created_by_id INTEGER NOT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(cycle_id, position_mapping_id)
+    )
+  `);
+
   // Add compensation columns to position_mappings if they don't exist
   // SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so we check pragmatically
   const columns = database.exec('PRAGMA table_info(position_mappings)');
@@ -285,6 +337,15 @@ function createTables(database: SqlJsDatabase): void {
   database.run('CREATE INDEX IF NOT EXISTS idx_salary_history_employee ON salary_history(employee_id)');
   database.run('CREATE INDEX IF NOT EXISTS idx_salary_history_year ON salary_history(data_year)');
   database.run('CREATE INDEX IF NOT EXISTS idx_salary_history_vp ON salary_history(vp_stem)');
+  
+  // Equity review workflow indexes
+  database.run('CREATE INDEX IF NOT EXISTS idx_equity_review_cycles_status ON equity_review_cycles(status)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_equity_review_cycles_fiscal_year ON equity_review_cycles(fiscal_year)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_vp_review_status_cycle ON vp_review_status(cycle_id)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_vp_review_status_vp ON vp_review_status(vp_stem)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_vp_review_status_status ON vp_review_status(status)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_employee_feedback_cycle ON employee_feedback(cycle_id)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_employee_feedback_position ON employee_feedback(position_mapping_id)');
   
   // Add proposed_raise column to equity_analysis if it doesn't exist (migration)
   const eaColumns = database.exec('PRAGMA table_info(equity_analysis)');
@@ -418,6 +479,101 @@ function runMigrations(database: SqlJsDatabase): void {
     database.run('CREATE INDEX IF NOT EXISTS idx_equity_analysis_position ON equity_analysis(position_mapping_id)');
     
     console.log('Database migration complete');
+  }
+
+  // Add vp_supplemental_offer column to vp_review_status if it doesn't exist
+  const vprsColumns = database.exec('PRAGMA table_info(vp_review_status)');
+  const vprsColumnNames = vprsColumns[0]?.values.map(row => row[1] as string) || [];
+  
+  if (!vprsColumnNames.includes('vp_supplemental_offer')) {
+    try {
+      database.run('ALTER TABLE vp_review_status ADD COLUMN vp_supplemental_offer REAL DEFAULT NULL');
+      database.run('ALTER TABLE vp_review_status ADD COLUMN supplemental_offer_notes TEXT DEFAULT NULL');
+      database.run('ALTER TABLE vp_review_status ADD COLUMN supplemental_offered_at TEXT DEFAULT NULL');
+      console.log('Added vp_supplemental_offer columns to vp_review_status');
+    } catch {
+      // Columns might already exist
+    }
+  }
+
+  // Add HR approval columns to vp_review_status if they don't exist
+  if (!vprsColumnNames.includes('hr_approved_at')) {
+    try {
+      database.run('ALTER TABLE vp_review_status ADD COLUMN hr_approved_at TEXT DEFAULT NULL');
+      database.run('ALTER TABLE vp_review_status ADD COLUMN hr_approved_by_id INTEGER DEFAULT NULL');
+      console.log('Added HR approval columns to vp_review_status');
+    } catch {
+      // Columns might already exist
+    }
+  }
+
+  // Add PC (President's Cabinet) approval columns to equity_review_cycles if they don't exist
+  const ercColumns = database.exec('PRAGMA table_info(equity_review_cycles)');
+  const ercColumnNames = ercColumns[0]?.values.map(row => row[1] as string) || [];
+  
+  if (!ercColumnNames.includes('pc_submitted_at')) {
+    try {
+      database.run('ALTER TABLE equity_review_cycles ADD COLUMN pc_submitted_at TEXT DEFAULT NULL');
+      database.run('ALTER TABLE equity_review_cycles ADD COLUMN pc_submitted_by_id INTEGER DEFAULT NULL');
+      database.run('ALTER TABLE equity_review_cycles ADD COLUMN pc_vote_date TEXT DEFAULT NULL');
+      database.run('ALTER TABLE equity_review_cycles ADD COLUMN pc_vote_result TEXT DEFAULT NULL');
+      database.run('ALTER TABLE equity_review_cycles ADD COLUMN pc_vote_notes TEXT DEFAULT NULL');
+      console.log('Added PC approval columns to equity_review_cycles');
+    } catch {
+      // Columns might already exist
+    }
+  }
+
+  // Migrate vp_review_status to add 'finalized' status to CHECK constraint
+  // Check if we need to migrate by looking at the table schema
+  const vprsTableInfo = database.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='vp_review_status'");
+  const vprsCreateSql = vprsTableInfo[0]?.values[0]?.[0] as string || '';
+  
+  if (vprsCreateSql && !vprsCreateSql.includes('finalized')) {
+    console.log('Migrating vp_review_status to add finalized status...');
+    try {
+      // Create new table with updated constraint
+      database.run(`
+        CREATE TABLE vp_review_status_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          cycle_id INTEGER NOT NULL REFERENCES equity_review_cycles(id) ON DELETE CASCADE,
+          vp_stem TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_review', 'approved', 'changes_requested', 'hr_revised', 'finalized')),
+          allocated_budget REAL,
+          proposed_total REAL,
+          employee_count INTEGER,
+          sent_at TEXT,
+          reviewed_at TEXT,
+          reviewed_by_id INTEGER REFERENCES users(id),
+          notes TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          vp_supplemental_offer REAL DEFAULT NULL,
+          supplemental_offer_notes TEXT DEFAULT NULL,
+          supplemental_offered_at TEXT DEFAULT NULL,
+          hr_approved_at TEXT DEFAULT NULL,
+          hr_approved_by_id INTEGER DEFAULT NULL,
+          UNIQUE(cycle_id, vp_stem)
+        )
+      `);
+      
+      // Copy data from old table
+      database.run(`
+        INSERT INTO vp_review_status_new 
+        SELECT id, cycle_id, vp_stem, status, allocated_budget, proposed_total, employee_count,
+               sent_at, reviewed_at, reviewed_by_id, notes, created_at,
+               vp_supplemental_offer, supplemental_offer_notes, supplemental_offered_at,
+               hr_approved_at, hr_approved_by_id
+        FROM vp_review_status
+      `);
+      
+      // Drop old table and rename new one
+      database.run('DROP TABLE vp_review_status');
+      database.run('ALTER TABLE vp_review_status_new RENAME TO vp_review_status');
+      
+      console.log('Successfully migrated vp_review_status table');
+    } catch (err) {
+      console.error('Failed to migrate vp_review_status:', err);
+    }
   }
 }
 

@@ -4,6 +4,7 @@ interface SalaryRangeBarProps {
   currentSalary: number | null;
   adjustedMedian: number | null;
   baseMedian?: number | null;
+  proposedRaise?: number | null;
   className?: string;
   showLabels?: boolean;
 }
@@ -14,11 +15,13 @@ interface SalaryRangeBarProps {
  * - A marker at the median (100%)
  * - A marker for the current salary position
  * - Color coding based on position relative to median
+ * - Optional second color showing proposed raise impact
  */
 export function SalaryRangeBar({ 
   currentSalary, 
   adjustedMedian, 
   baseMedian,
+  proposedRaise,
   className,
   showLabels = false 
 }: SalaryRangeBarProps) {
@@ -33,6 +36,10 @@ export function SalaryRangeBar({
   // Calculate position as percentage of median (100% = at median)
   const percentOfMedian = (currentSalary / adjustedMedian) * 100;
   
+  // Calculate new position if there's a proposed raise
+  const newSalary = proposedRaise && proposedRaise > 0 ? currentSalary + proposedRaise : null;
+  const newPercentOfMedian = newSalary ? (newSalary / adjustedMedian) * 100 : null;
+  
   // Range is 50% to 150% of median - map to 0-100% for the bar
   const minRange = 50;
   const maxRange = 150;
@@ -40,11 +47,13 @@ export function SalaryRangeBar({
   
   // Calculate position on the bar (0% = 50% of median, 100% = 150% of median)
   const barPosition = Math.max(0, Math.min(100, ((percentOfMedian - minRange) / rangeSpan) * 100));
+  const newBarPosition = newPercentOfMedian 
+    ? Math.max(0, Math.min(100, ((newPercentOfMedian - minRange) / rangeSpan) * 100))
+    : null;
   
   // Determine color based on position
   const isUnderpaid = percentOfMedian < 95;
   const isOverpaid = percentOfMedian > 105;
-  const isAtMedian = !isUnderpaid && !isOverpaid;
 
   const markerColor = isUnderpaid 
     ? 'bg-red-500' 
@@ -79,13 +88,24 @@ export function SalaryRangeBar({
       {/* The range bar */}
       <div 
         className="relative h-5 bg-gray-100 dark:bg-gray-800 rounded-full overflow-hidden"
-        title={`Current: ${formatCurrency(currentSalary)} | Median: ${formatCurrency(adjustedMedian)} | ${percentOfMedian.toFixed(0)}% of median`}
+        title={`Current: ${formatCurrency(currentSalary)}${newSalary ? ` → ${formatCurrency(newSalary)} (+${formatCurrency(proposedRaise!)})` : ''} | Median: ${formatCurrency(adjustedMedian)} | ${percentOfMedian.toFixed(0)}%${newPercentOfMedian ? ` → ${newPercentOfMedian.toFixed(0)}%` : ''} of median`}
       >
-        {/* Fill from left to current position */}
+        {/* Fill from left to current position (current salary) */}
         <div 
           className={cn("absolute left-0 top-0 h-full transition-all", fillColor)}
           style={{ width: `${barPosition}%` }}
         />
+        
+        {/* Proposed raise fill (green segment from current to new position) */}
+        {newBarPosition && newBarPosition > barPosition && (
+          <div 
+            className="absolute top-0 h-full bg-emerald-400 dark:bg-emerald-500 transition-all"
+            style={{ 
+              left: `${barPosition}%`,
+              width: `${newBarPosition - barPosition}%`
+            }}
+          />
+        )}
         
         {/* 75% marker (light) */}
         <div 
@@ -105,6 +125,14 @@ export function SalaryRangeBar({
           style={{ left: '75%' }}
         />
         
+        {/* New salary marker (if there's a raise) */}
+        {newBarPosition && (
+          <div 
+            className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full border-2 border-white shadow-md bg-emerald-500 transition-all"
+            style={{ left: `calc(${newBarPosition}% - 6px)` }}
+          />
+        )}
+        
         {/* Current salary marker */}
         <div 
           className={cn(
@@ -123,6 +151,9 @@ export function SalaryRangeBar({
             "text-gray-700 dark:text-gray-300"
           )}>
             {percentOfMedian.toFixed(0)}%
+            {newPercentOfMedian && (
+              <span className="text-emerald-700 dark:text-emerald-400"> → {newPercentOfMedian.toFixed(0)}%</span>
+            )}
           </span>
         </div>
       </div>
@@ -147,31 +178,66 @@ export function SalaryRangeBar({
 export function SalaryRangeBarCompact({ 
   currentSalary, 
   adjustedMedian,
+  proposedRaise,
 }: { 
   currentSalary: number | null;
   adjustedMedian: number | null;
+  proposedRaise?: number | null;
 }) {
   if (!currentSalary || !adjustedMedian) {
     return <div className="w-24 h-2 bg-muted rounded" />;
   }
 
   const percentOfMedian = (currentSalary / adjustedMedian) * 100;
+  const newSalary = proposedRaise && proposedRaise > 0 ? currentSalary + proposedRaise : null;
+  const newPercentOfMedian = newSalary ? (newSalary / adjustedMedian) * 100 : null;
+  
   const minRange = 50;
   const maxRange = 150;
   const rangeSpan = maxRange - minRange;
   const barPosition = Math.max(0, Math.min(100, ((percentOfMedian - minRange) / rangeSpan) * 100));
+  const newBarPosition = newPercentOfMedian 
+    ? Math.max(0, Math.min(100, ((newPercentOfMedian - minRange) / rangeSpan) * 100))
+    : null;
   
   const isUnderpaid = percentOfMedian < 95;
   const markerColor = isUnderpaid ? 'bg-red-500' : percentOfMedian > 105 ? 'bg-green-500' : 'bg-blue-500';
   const fillColor = isUnderpaid ? 'bg-red-200' : percentOfMedian > 105 ? 'bg-green-200' : 'bg-blue-200';
 
+  const formatCurrency = (val: number) => 
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(val);
+
   return (
     <div 
       className="relative w-24 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden"
-      title={`${percentOfMedian.toFixed(0)}% of adjusted median`}
+      title={`${percentOfMedian.toFixed(0)}%${newPercentOfMedian ? ` → ${newPercentOfMedian.toFixed(0)}%` : ''} of median${newSalary ? ` (+${formatCurrency(proposedRaise!)})` : ''}`}
     >
+      {/* Current salary fill */}
       <div className={cn("absolute left-0 top-0 h-full", fillColor)} style={{ width: `${barPosition}%` }} />
+      
+      {/* Proposed raise fill (green segment) */}
+      {newBarPosition && newBarPosition > barPosition && (
+        <div 
+          className="absolute top-0 h-full bg-emerald-400 dark:bg-emerald-500"
+          style={{ 
+            left: `${barPosition}%`,
+            width: `${newBarPosition - barPosition}%`
+          }}
+        />
+      )}
+      
+      {/* Median marker */}
       <div className="absolute top-0 h-full w-px bg-gray-400" style={{ left: '50%' }} />
+      
+      {/* New position marker */}
+      {newBarPosition && (
+        <div 
+          className="absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-emerald-500"
+          style={{ left: `calc(${newBarPosition}% - 4px)` }}
+        />
+      )}
+      
+      {/* Current salary marker */}
       <div 
         className={cn("absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full", markerColor)}
         style={{ left: `calc(${barPosition}% - 4px)` }}

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { DollarSign, Wand2, Trash2, TrendingUp, Users, RefreshCw, CheckCircle, Send, AlertCircle } from 'lucide-react';
+import { DollarSign, Wand2, Trash2, TrendingUp, Users, RefreshCw, CheckCircle, CheckCircle2, Send, AlertCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
-import { equityAnalysisApi } from '@/services/api';
+import { equityAnalysisApi, reviewCyclesApi } from '@/services/api';
 
 interface ProposedRaise {
   positionMappingId: number;
@@ -25,6 +25,11 @@ interface AdjustmentPanelProps {
   totalGap: number;
   onBudgetAllocated?: () => void;
   vpFilter?: string;
+  vpAllocatedBudget?: number | null;  // When viewing a specific VP during a review cycle
+  vpSupplementalOffer?: number | null; // VP's supplemental funding offer
+  vpReviewStatus?: string | null; // VP's review status in the current cycle
+  activeCycleId?: number | null; // Active review cycle ID
+  onVpReviewApproved?: () => void; // Callback when HR approves a VP's review
 }
 
 function formatCurrency(value: number | null | undefined): string {
@@ -32,21 +37,48 @@ function formatCurrency(value: number | null | undefined): string {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(value);
 }
 
-export function AdjustmentPanel({ totalGap, onBudgetAllocated, vpFilter }: AdjustmentPanelProps) {
+export function AdjustmentPanel({ 
+  totalGap, 
+  onBudgetAllocated, 
+  vpFilter, 
+  vpAllocatedBudget, 
+  vpSupplementalOffer,
+  vpReviewStatus,
+  activeCycleId,
+  onVpReviewApproved 
+}: AdjustmentPanelProps) {
   const [budgetAmount, setBudgetAmount] = useState('');
   const [proposedRaises, setProposedRaises] = useState<ProposedRaise[]>([]);
   const [isAllocating, setIsAllocating] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isApprovingVp, setIsApprovingVp] = useState(false);
   const [submitDialogOpen, setSubmitDialogOpen] = useState(false);
+  const [approveDialogOpen, setApproveDialogOpen] = useState(false);
   const [reviewNotes, setReviewNotes] = useState('');
   const [lastAllocation, setLastAllocation] = useState<{ budget: number; allocated: number; positions: number } | null>(null);
   const [lastSubmission, setLastSubmission] = useState<{ employeesUpdated: number; totalRaises: number; dataYear: string } | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  // Calculate combined budget for this VP (HR allocation + VP supplemental)
+  const vpTotalBudget = vpAllocatedBudget ? (vpAllocatedBudget + (vpSupplementalOffer || 0)) : null;
+  
+  // Check if this VP review is already finalized
+  const isVpFinalized = vpReviewStatus === 'finalized';
+  
+  // Check if we're viewing a VP with an active review that needs HR approval (not already finalized)
+  const showVpApproveButton = vpFilter && vpAllocatedBudget !== undefined && vpAllocatedBudget !== null && activeCycleId && !isVpFinalized;
+
   useEffect(() => {
     loadProposedRaises();
   }, [vpFilter]);
+  
+  // Pre-fill budget amount with VP's allocation if available
+  useEffect(() => {
+    if (vpTotalBudget && !budgetAmount) {
+      setBudgetAmount(vpTotalBudget.toString());
+    }
+  }, [vpTotalBudget]);
 
   async function loadProposedRaises() {
     try {
@@ -119,13 +151,33 @@ export function AdjustmentPanel({ totalGap, onBudgetAllocated, vpFilter }: Adjus
     }
   }
 
+  async function handleApproveVpReview() {
+    if (!activeCycleId || !vpFilter) return;
+    
+    setIsApprovingVp(true);
+    setSubmitError(null);
+    try {
+      await reviewCyclesApi.hrApproveVp(activeCycleId, vpFilter, reviewNotes || undefined);
+      setApproveDialogOpen(false);
+      setReviewNotes('');
+      // Notify parent to refresh data
+      onVpReviewApproved?.();
+    } catch (err: unknown) {
+      console.error('Failed to approve VP review:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Failed to approve VP review';
+      setSubmitError(errorMessage);
+    } finally {
+      setIsApprovingVp(false);
+    }
+  }
+
   const totalProposedRaises = proposedRaises.reduce((sum, r) => sum + r.proposedRaise, 0);
   const totalRemainingGap = proposedRaises.reduce((sum, r) => sum + (r.remainingGap || 0), 0);
   const gapCovered = totalGap > 0 ? ((totalGap - totalRemainingGap) / totalGap) * 100 : 0;
 
   return (
-    <Card className="sticky top-4">
-      <CardHeader className="pb-3">
+    <Card className="sticky top-4 max-h-[calc(100vh-2rem)] flex flex-col">
+      <CardHeader className="pb-3 flex-shrink-0">
         <CardTitle className="flex items-center gap-2">
           <DollarSign className="h-5 w-5" />
           Budget Adjustment
@@ -134,15 +186,47 @@ export function AdjustmentPanel({ totalGap, onBudgetAllocated, vpFilter }: Adjus
           Allocate equity budget to employees
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-4 overflow-y-auto flex-1">
+        {/* VP Allocated Budget Display (when viewing a specific VP during review) */}
+        {vpAllocatedBudget !== undefined && vpAllocatedBudget !== null && (
+          <div className="space-y-2">
+            <div className={`p-3 rounded-lg ${isVpFinalized ? 'bg-green-50 dark:bg-green-950/30' : 'bg-blue-50 dark:bg-blue-950/30'}`}>
+              {isVpFinalized && (
+                <Badge className="mb-2 bg-green-600">
+                  <CheckCircle2 className="h-3 w-3 mr-1" />
+                  Approved
+                </Badge>
+              )}
+              <div className="text-sm text-muted-foreground">Allocated to this Division</div>
+              <div className={`text-2xl font-bold ${isVpFinalized ? 'text-green-600' : 'text-blue-600'}`}>
+                {formatCurrency(vpAllocatedBudget)}
+              </div>
+              {vpSupplementalOffer && vpSupplementalOffer > 0 && (
+                <div className="mt-1">
+                  <span className="text-sm text-green-600 font-medium">
+                    + {formatCurrency(vpSupplementalOffer)} VP offered
+                  </span>
+                  <div className="text-lg font-bold text-green-600 mt-1">
+                    = {formatCurrency(vpTotalBudget)} total
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Budget Input */}
         <div className="space-y-2">
-          <Label htmlFor="budget">Total Equity Budget</Label>
+          <Label htmlFor="budget">
+            {vpAllocatedBudget !== undefined && vpAllocatedBudget !== null 
+              ? 'Adjust Budget' 
+              : 'Total Equity Budget'}
+          </Label>
           <div className="flex gap-2">
             <Input
               id="budget"
               type="text"
-              placeholder="$100,000"
+              placeholder={vpTotalBudget ? formatCurrency(vpTotalBudget) : "$100,000"}
               value={budgetAmount}
               onChange={(e) => setBudgetAmount(e.target.value)}
               className="flex-1"
@@ -265,8 +349,83 @@ export function AdjustmentPanel({ totalGap, onBudgetAllocated, vpFilter }: Adjus
           </div>
         )}
 
-        {/* Submit Review Button */}
-        {proposedRaises.length > 0 && (
+        {/* HR Approve VP Review Button - shown when HR is viewing a VP division during active review */}
+        {showVpApproveButton && (
+          <Dialog open={approveDialogOpen} onOpenChange={setApproveDialogOpen}>
+            <DialogTrigger asChild>
+              <Button className="w-full bg-blue-600 hover:bg-blue-700">
+                <CheckCircle2 className="h-4 w-4 mr-2" />
+                Approve Review
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Approve VP Review</DialogTitle>
+                <DialogDescription>
+                  This will finalize and approve the {vpFilter} division's equity review allocations.
+                  The VP's proposed raises will be locked in.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 py-4">
+                <div className="bg-muted rounded-lg p-4">
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <div className="text-muted-foreground">Employees</div>
+                      <div className="text-lg font-semibold">{proposedRaises.length}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground">Total Raises</div>
+                      <div className="text-lg font-semibold text-green-600">{formatCurrency(totalProposedRaises)}</div>
+                    </div>
+                    <div>
+                      <div className="text-muted-foreground">Allocated Budget</div>
+                      <div className="text-lg font-semibold text-blue-600">{formatCurrency(vpTotalBudget)}</div>
+                    </div>
+                    {vpSupplementalOffer && vpSupplementalOffer > 0 && (
+                      <div>
+                        <div className="text-muted-foreground">VP Supplemental</div>
+                        <div className="text-lg font-semibold text-green-600">{formatCurrency(vpSupplementalOffer)}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="approve-notes">Approval Notes (optional)</Label>
+                  <Textarea 
+                    id="approve-notes"
+                    placeholder="Add any notes about this approval..."
+                    value={reviewNotes}
+                    onChange={(e) => setReviewNotes(e.target.value)}
+                  />
+                </div>
+                {submitError && (
+                  <div className="bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800 rounded-lg p-3">
+                    <div className="flex items-center gap-2 text-red-700 dark:text-red-400 text-sm">
+                      <AlertCircle className="h-4 w-4" />
+                      {submitError}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setApproveDialogOpen(false)}>
+                  Cancel
+                </Button>
+                <Button 
+                  type="button"
+                  onClick={handleApproveVpReview} 
+                  disabled={isApprovingVp}
+                  className="bg-blue-600 hover:bg-blue-700"
+                >
+                  {isApprovingVp ? 'Approving...' : 'Approve Review'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
+
+        {/* Submit Review Button - only shown when not in formal review cycle mode */}
+        {proposedRaises.length > 0 && !showVpApproveButton && !activeCycleId && (
           <Dialog open={submitDialogOpen} onOpenChange={setSubmitDialogOpen}>
             <DialogTrigger asChild>
               <Button className="w-full bg-green-600 hover:bg-green-700">

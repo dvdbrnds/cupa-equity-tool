@@ -6,6 +6,8 @@ import { DashboardPage } from './pages/DashboardPage';
 import { PositionsPage } from './pages/PositionsPage';
 import { PositionDetailPage } from './pages/PositionDetailPage';
 import { ReviewHistoryPage } from './pages/ReviewHistoryPage';
+import { ReviewCyclesPage } from './pages/ReviewCyclesPage';
+import { ReviewCycleDetailPage } from './pages/ReviewCycleDetailPage';
 import { UsersPage } from './pages/UsersPage';
 import { ImportPage } from './pages/ImportPage';
 import { CupaCatalogPage } from './pages/CupaCatalogPage';
@@ -86,6 +88,10 @@ export default function App() {
         
         {/* Review History */}
         <Route path="history" element={<ReviewHistoryPage />} />
+        
+        {/* Review Cycles (HR workflow) */}
+        <Route path="review-cycles" element={<EditorRoute><ReviewCyclesPage /></EditorRoute>} />
+        <Route path="review-cycles/:id" element={<EditorRoute><ReviewCycleDetailPage /></EditorRoute>} />
         
         {/* Import (HR only) */}
         <Route path="import" element={<EditorRoute><ImportPage /></EditorRoute>} />

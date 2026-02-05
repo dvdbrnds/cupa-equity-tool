@@ -324,3 +324,112 @@ export interface EquityAnalysisSummary {
   medianGap: number;
   calculatedAt: string | null;
 }
+
+// ============================================================================
+// Equity Review Cycle Types (Workflow)
+// ============================================================================
+
+export type ReviewCycleStatus = 
+  | 'draft' 
+  | 'calculating' 
+  | 'pending_vp_review' 
+  | 'vp_review_in_progress' 
+  | 'hr_final_review' 
+  | 'pending_pc_approval'  // Submitted to President's Cabinet for vote
+  | 'pc_approved'          // PC has approved, ready for implementation
+  | 'pc_rejected'          // PC has rejected, needs revision
+  | 'approved' 
+  | 'implemented' 
+  | 'archived';
+
+export type VpReviewStatus = 
+  | 'pending' 
+  | 'in_review' 
+  | 'approved' 
+  | 'changes_requested' 
+  | 'hr_revised'
+  | 'finalized';
+
+export type EmployeeFeedbackType = 
+  | 'approve' 
+  | 'increase' 
+  | 'decrease' 
+  | 'defer' 
+  | 'discuss';
+
+export interface EquityReviewCycle {
+  id: number;
+  name: string;
+  fiscalYear: string;
+  totalBudget: number | null;
+  status: ReviewCycleStatus;
+  cupaDataYear: string | null;
+  deadline: string | null;
+  createdById: number;
+  createdAt: string;
+  updatedAt: string;
+  notes: string | null;
+  // PC (President's Cabinet) approval tracking
+  pcSubmittedAt: string | null;
+  pcSubmittedById: number | null;
+  pcVoteDate: string | null;
+  pcVoteResult: 'approved' | 'rejected' | null;
+  pcVoteNotes: string | null;
+}
+
+export interface EquityReviewCycleWithStats extends EquityReviewCycle {
+  vpCount: number;
+  pendingVpCount: number;
+  approvedVpCount: number;
+  totalProposed: number;
+  totalAllocated: number;
+  createdByName: string;
+}
+
+export interface VpReviewStatusRecord {
+  id: number;
+  cycleId: number;
+  vpStem: string;
+  vpTitle: string | null;
+  status: VpReviewStatus;
+  allocatedBudget: number | null;
+  proposedTotal: number | null;
+  employeeCount: number | null;
+  sentAt: string | null;
+  reviewedAt: string | null;
+  reviewedById: number | null;
+  reviewedByName: string | null;
+  notes: string | null;
+  createdAt: string;
+  // VP supplemental funding offer
+  vpSupplementalOffer: number | null;
+  supplementalOfferNotes: string | null;
+  supplementalOfferedAt: string | null;
+  // HR final approval
+  hrApprovedAt: string | null;
+  hrApprovedById: number | null;
+  hrApprovedByName: string | null;
+}
+
+export interface EmployeeFeedback {
+  id: number;
+  cycleId: number;
+  positionMappingId: number;
+  feedbackType: EmployeeFeedbackType;
+  adjustedRaise: number | null;
+  notes: string | null;
+  createdById: number;
+  createdByName: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EmployeeFeedbackWithDetails extends EmployeeFeedback {
+  employeeId: string;
+  employeeName: string;
+  institutionalTitle: string;
+  department: string;
+  currentSalary: number | null;
+  equityGap: number | null;
+  proposedRaise: number | null;
+}
