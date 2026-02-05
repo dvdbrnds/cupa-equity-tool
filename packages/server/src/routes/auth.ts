@@ -58,11 +58,21 @@ authRouter.post('/login', (req: Request, res: Response) => {
   const token = generateToken(userResponse);
 
   // Set httpOnly cookie
-  // Note: When behind a reverse proxy (Coolify/Traefik), trust the proxy for secure detection
+  // Check if request came through HTTPS (via X-Forwarded-Proto from reverse proxy)
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  const isSecure = req.secure || forwardedProto === 'https';
+  
+  console.log('Login cookie settings:', { 
+    reqSecure: req.secure, 
+    forwardedProto, 
+    isSecure,
+    nodeEnv: process.env.NODE_ENV 
+  });
+  
   res.cookie('token', token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    secure: isSecure,
+    sameSite: 'lax',
     maxAge: 8 * 60 * 60 * 1000, // 8 hours
   });
 
