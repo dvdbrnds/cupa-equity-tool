@@ -215,11 +215,11 @@ export function ReviewHistoryPage() {
   function getTrendBadge(trend: string) {
     switch (trend) {
       case 'improving':
-        return <Badge variant="green" className="gap-1"><CheckCircle className="h-3 w-3" /> Improving</Badge>;
+        return <Badge variant="success" className="gap-1"><CheckCircle className="h-3 w-3" /> Improving</Badge>;
       case 'worsening':
         return <Badge variant="red" className="gap-1"><AlertCircle className="h-3 w-3" /> Needs Help</Badge>;
       case 'stable':
-        return <Badge variant="blue" className="gap-1"><Minus className="h-3 w-3" /> Stable</Badge>;
+        return <Badge variant="info" className="gap-1"><Minus className="h-3 w-3" /> Stable</Badge>;
       default:
         return <Badge variant="gray">Unknown</Badge>;
     }
