@@ -1,4 +1,5 @@
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
+import bcrypt from 'bcryptjs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
@@ -47,10 +48,36 @@ export async function initDatabaseAsync(): Promise<SqlJsDatabase> {
   // Run migrations for existing databases
   runMigrations(db);
   
+  // Seed default admin user if no users exist
+  seedDefaultUsers(db);
+  
   // Save after creating tables
   saveDatabase();
 
   return db;
+}
+
+function seedDefaultUsers(database: SqlJsDatabase): void {
+  const userCount = database.exec('SELECT COUNT(*) as count FROM users');
+  const count = userCount[0]?.values[0]?.[0] as number || 0;
+  
+  if (count === 0) {
+    console.log('No users found, seeding default users...');
+    
+    const adminPassword = bcrypt.hashSync('admin123', 10);
+    database.run(
+      'INSERT INTO users (email, password_hash, name, role, division) VALUES (?, ?, ?, ?, ?)',
+      ['admin@moravian.edu', adminPassword, 'System Administrator', 'system_admin', null]
+    );
+    console.log('Created admin user: admin@moravian.edu / admin123');
+    
+    const hrPassword = bcrypt.hashSync('hr123', 10);
+    database.run(
+      'INSERT INTO users (email, password_hash, name, role, division) VALUES (?, ?, ?, ?, ?)',
+      ['hr@moravian.edu', hrPassword, 'HR Administrator', 'hr_admin', null]
+    );
+    console.log('Created HR user: hr@moravian.edu / hr123');
+  }
 }
 
 // Synchronous init for compatibility - loads from file if exists
