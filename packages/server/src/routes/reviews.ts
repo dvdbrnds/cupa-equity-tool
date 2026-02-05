@@ -16,7 +16,7 @@ function rowToPositionWithCupa(row: Record<string, unknown>): PositionMappingWit
     division: row.division as string, department: row.department as string, supervisor: row.supervisor as string | null,
     vpStem: row.vp_stem as string, auditStatus: row.audit_status as AuditStatus,
     assignedReviewerId: row.assigned_reviewer_id as number | null, reviewDate: row.review_date as string | null,
-    createdAt: row.created_at as string, auditCycleId: row.audit_cycle_id as number | null,
+    createdAt: row.created_at as string,
     cupaTitle: row.cupa_title as string | null, cupaDescription: row.cupa_description as string | null,
     reviewerName: row.reviewer_name as string | null,
   };

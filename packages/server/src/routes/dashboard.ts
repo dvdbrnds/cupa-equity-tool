@@ -69,7 +69,7 @@ dashboardRouter.get('/audit-progress', (req: Request, res: Response) => {
   `, params);
 
   const progress: AuditProgressByVp[] = rows.map(row => ({
-    vpStem: row.vp_stem as string, totalPositions: row.total_positions as number,
+    vpStem: row.vp_stem as string, vpTitle: null, totalPositions: row.total_positions as number,
     pending: row.pending as number, confirmed: row.confirmed as number,
     flagged: row.flagged as number, resolved: row.resolved as number,
   }));

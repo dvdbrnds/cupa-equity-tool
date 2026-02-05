@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { dbAll, dbGet, dbRun } from '../db/init.js';
 import { requireAuth, requireEditor, getDivisionFilter, type AuthenticatedRequest } from '../middleware/auth.js';
 import { NotFoundError, ForbiddenError, BadRequestError } from '../middleware/error-handler.js';
-import type { PositionMapping, PositionMappingWithCupa, PaginatedResponse, AuditStatus } from '@cupa/shared';
+import type { PositionMapping, PositionMappingWithCupa, PaginatedResponse, AuditStatus, CompensationType } from '@cupa/shared';
 
 export const positionsRouter = Router();
 positionsRouter.use(requireAuth);
@@ -27,7 +27,7 @@ function rowToPosition(row: Record<string, unknown>): PositionMapping {
     hireDate: row.hire_date as string | null,
     fte: (row.fte as number) || 1.0,
     appointmentMonths: (row.appointment_months as number) || 12,
-    compensationType: (row.compensation_type as string) || 'salaried',
+    compensationType: (row.compensation_type as CompensationType) || 'salaried',
     hasHousingBenefit: Boolean(row.has_housing_benefit),
     housingValue: (row.housing_value as number) || 15000,
   };
