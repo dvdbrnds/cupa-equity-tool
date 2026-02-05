@@ -24,6 +24,9 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Trust proxy (needed when behind Coolify/Traefik for secure cookies)
+app.set('trust proxy', 1);
+
 async function main() {
   // Initialize database
   await initDatabaseAsync();
