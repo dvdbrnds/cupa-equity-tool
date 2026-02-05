@@ -1,0 +1,30 @@
+{
+  "name": "cupa-equity-tool",
+  "version": "1.0.0",
+  "private": true,
+  "description": "CUPA Position & Equity Analysis Tool for Higher Education",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "npm run dev -w @cupa/server",
+    "dev:client": "npm run dev -w @cupa/client",
+    "build": "npm run build -w @cupa/shared && npm run build -w @cupa/server && npm run build -w @cupa/client",
+    "build:shared": "npm run build -w @cupa/shared",
+    "build:server": "npm run build -w @cupa/server",
+    "build:client": "npm run build -w @cupa/client",
+    "start": "npm run start -w @cupa/server",
+    "lint": "eslint packages/*/src --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit -p packages/client && tsc --noEmit -p packages/server"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "concurrently": "^8.2.2",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

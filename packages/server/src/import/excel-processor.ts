@@ -1,0 +1,552 @@
+import * as XLSX from 'xlsx';
+import { dbGet, dbRun, dbAll, saveDatabase } from '../db/init.js';
+import type { ImportResult, ImportValidationError } from '@cupa/shared';
+
+/**
+ * Snapshot current salary data to salary_history before making changes.
+ * This preserves historical data for year-over-year comparisons.
+ */
+function snapshotSalaryHistory(dataYear?: string): number {
+  const year = dataYear || new Date().getFullYear().toString();
+  
+  // Get all current positions with salary and equity data
+  const currentData = dbAll<{
+    employee_id: string;
+    employee_name: string;
+    vp_stem: string;
+    department: string;
+    institutional_title: string;
+    current_salary: number | null;
+    equity_gap: number | null;
+    proposed_raise: number | null;
+  }>(`
+    SELECT 
+      pm.employee_id,
+      pm.employee_name,
+      pm.vp_stem,
+      pm.department,
+      pm.institutional_title,
+      pm.current_salary,
+      ea.equity_gap,
+      ea.proposed_raise
+    FROM position_mappings pm
+    LEFT JOIN equity_analysis ea ON pm.id = ea.position_mapping_id
+    WHERE pm.current_salary IS NOT NULL
+  `);
+  
+  let snapshotCount = 0;
+  
+  for (const record of currentData) {
+    // Check if we already have a snapshot for this employee and year
+    const existing = dbGet<{ id: number; current_salary: number }>(
+      'SELECT id, current_salary FROM salary_history WHERE employee_id = ? AND data_year = ?',
+      [record.employee_id, year]
+    );
+    
+    // Get the previous year's salary to calculate actual raise given
+    const previousYear = (parseInt(year) - 1).toString();
+    const previousRecord = dbGet<{ current_salary: number }>(
+      'SELECT current_salary FROM salary_history WHERE employee_id = ? AND data_year = ?',
+      [record.employee_id, previousYear]
+    );
+    
+    const actualRaiseGiven = previousRecord && record.current_salary
+      ? record.current_salary - previousRecord.current_salary
+      : null;
+    
+    if (existing) {
+      // Update existing snapshot if salary changed
+      if (existing.current_salary !== record.current_salary) {
+        dbRun(`
+          UPDATE salary_history SET 
+            employee_name = ?, vp_stem = ?, department = ?, institutional_title = ?,
+            current_salary = ?, equity_gap = ?, proposed_raise = ?, 
+            actual_raise_given = ?, snapshot_date = datetime('now')
+          WHERE id = ?
+        `, [
+          record.employee_name, record.vp_stem, record.department, record.institutional_title,
+          record.current_salary, record.equity_gap, record.proposed_raise,
+          actualRaiseGiven, existing.id
+        ]);
+        snapshotCount++;
+      }
+    } else {
+      // Insert new snapshot
+      dbRun(`
+        INSERT INTO salary_history 
+        (employee_id, employee_name, vp_stem, department, institutional_title, 
+         current_salary, equity_gap, proposed_raise, actual_raise_given, data_year)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        record.employee_id, record.employee_name, record.vp_stem, record.department,
+        record.institutional_title, record.current_salary, record.equity_gap,
+        record.proposed_raise, actualRaiseGiven, year
+      ]);
+      snapshotCount++;
+    }
+  }
+  
+  return snapshotCount;
+}
+
+const COLUMN_MAPPINGS = {
+  // Master sheet uses "Position Number", VP tabs use "CUPA #"
+  cupaCode: ['CUPA #', 'CUPA#', 'CUPA Code', 'CUPACode', 'CUPA_Code', 'CUPA Number', 'Position Number'],
+  // Master sheet uses "Title/Role", VP tabs use "CUPA Title"
+  cupaTitle: ['CUPA Title', 'CUPATitle', 'CUPA_Title', 'Title', 'Title/Role'],
+  cupaDescription: ['CUPA Position Description', 'CUPA Description', 'Description', 'Position Description'],
+  blsSocCode: ['BLS SOC #', 'BLS SOC', 'SOC Code', 'SOC #', 'BLS_SOC'],
+  blsSocName: ['BLS SOC Category Name', 'SOC Category', 'SOC Name', 'BLS Category', 'BLS Standard Occupational Code (SOC) Category Name'],
+  employeeId: ['Employee ID', 'EmployeeID', 'Employee_ID', 'EE ID', 'ID'],
+  institutionalTitle: ['Moravian Job Title', 'Job Title', 'Title', 'Position Title', 'Institutional Title'],
+  lastName: ['Last Name', 'LastName', 'Last_Name', 'Surname'],
+  firstName: ['First Name', 'FirstName', 'First_Name', 'Given Name'],
+  division: ['Division', 'Div'],
+  department: ['Department', 'Dept'],
+  supervisor: ['Supervisor', 'Reports To', 'Manager'],
+  vpStem: ['VP Stem', 'VPStem', 'VP_Stem', 'VP', 'Senior Leader'],
+};
+
+function findColumn(headers: string[], possibleNames: string[]): number {
+  const headerLower = headers.map(h => (h || '').toString().toLowerCase().trim());
+  for (const name of possibleNames) {
+    const idx = headerLower.indexOf(name.toLowerCase());
+    if (idx !== -1) return idx;
+  }
+  return -1;
+}
+
+function normalizeString(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  return String(value).trim();
+}
+
+function normalizeCupaCode(value: unknown): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  const str = String(value).trim();
+  
+  // Skip section headers like "Top Executive Officers: 100000 - 105000"
+  if (str.includes(':') || str.includes('-') && str.length > 10) return null;
+  
+  // If it's already a number, use it directly
+  if (typeof value === 'number') {
+    const numStr = String(Math.floor(value));
+    if (numStr.length >= 5 && numStr.length <= 6) {
+      return numStr.padStart(6, '0');
+    }
+    return null;
+  }
+  
+  // Extract digits from string
+  const digits = str.replace(/\D/g, '');
+  if (digits.length === 0 || digits.length > 6) return null;
+  
+  // Valid CUPA codes are 5-6 digits
+  if (digits.length >= 5) {
+    return digits.padStart(6, '0');
+  }
+  return null;
+}
+
+export async function importCupaCatalog(buffer: Buffer, catalogYear: string, sheetName?: string): Promise<ImportResult> {
+  const workbook = XLSX.read(buffer, { type: 'buffer' });
+  const targetSheet = sheetName || workbook.SheetNames[0];
+  
+  if (!workbook.SheetNames.includes(targetSheet)) {
+    return { success: false, imported: 0, skipped: 0, errors: [{ row: 0, field: 'sheet', message: `Sheet "${targetSheet}" not found` }] };
+  }
+
+  const sheet = workbook.Sheets[targetSheet];
+  const data = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as unknown[][];
+  
+  if (data.length < 2) {
+    return { success: false, imported: 0, skipped: 0, errors: [{ row: 0, field: 'data', message: 'No data found in sheet' }] };
+  }
+
+  const headers = data[0] as string[];
+  const colCupaCode = findColumn(headers, COLUMN_MAPPINGS.cupaCode);
+  const colTitle = findColumn(headers, COLUMN_MAPPINGS.cupaTitle);
+  const colDescription = findColumn(headers, COLUMN_MAPPINGS.cupaDescription);
+  const colBlsSoc = findColumn(headers, COLUMN_MAPPINGS.blsSocCode);
+  const colBlsName = findColumn(headers, COLUMN_MAPPINGS.blsSocName);
+
+  if (colCupaCode === -1) {
+    return { success: false, imported: 0, skipped: 0, errors: [{ row: 1, field: 'CUPA Code', message: `CUPA Code column not found. Available headers: ${headers.join(', ')}` }] };
+  }
+
+  const errors: ImportValidationError[] = [];
+  let imported = 0;
+  let skipped = 0;
+
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const rowNum = i + 1;
+
+    const cupaCode = normalizeCupaCode(row[colCupaCode]);
+    if (!cupaCode) { skipped++; continue; }
+
+    const title = colTitle !== -1 ? normalizeString(row[colTitle]) : '';
+    const description = colDescription !== -1 ? normalizeString(row[colDescription]) : '';
+    const blsSoc = colBlsSoc !== -1 ? normalizeString(row[colBlsSoc]) : null;
+    const blsName = colBlsName !== -1 ? normalizeString(row[colBlsName]) : null;
+
+    if (!title) { errors.push({ row: rowNum, field: 'title', message: 'Missing title' }); skipped++; continue; }
+
+    try {
+      const existing = dbGet<{ cupa_code: string }>('SELECT cupa_code FROM cupa_positions WHERE cupa_code = ?', [cupaCode]);
+      if (existing) {
+        dbRun('UPDATE cupa_positions SET title = ?, description = ?, bls_soc_code = ?, bls_soc_name = ?, catalog_year = ? WHERE cupa_code = ?',
+          [title, description || null, blsSoc, blsName, catalogYear, cupaCode]);
+      } else {
+        dbRun('INSERT INTO cupa_positions (cupa_code, title, description, bls_soc_code, bls_soc_name, catalog_year) VALUES (?, ?, ?, ?, ?, ?)',
+          [cupaCode, title, description || null, blsSoc, blsName, catalogYear]);
+      }
+      imported++;
+    } catch (err) {
+      errors.push({ row: rowNum, field: 'database', message: String(err) });
+      skipped++;
+    }
+  }
+
+  saveDatabase();
+  return { success: errors.length === 0, imported, skipped, errors: errors.slice(0, 100) };
+}
+
+export async function importPositions(buffer: Buffer, userId: number, sheetNames?: string[]): Promise<ImportResult> {
+  const workbook = XLSX.read(buffer, { type: 'buffer' });
+  const sheetsToProcess = sheetNames || workbook.SheetNames;
+  
+  // Snapshot current salary data before making changes
+  const snapshotCount = snapshotSalaryHistory();
+  console.log(`Snapshotted ${snapshotCount} salary records to history`);
+  
+  const errors: ImportValidationError[] = [];
+  let totalImported = 0;
+  let totalSkipped = 0;
+
+  for (const sheetName of sheetsToProcess) {
+    if (!workbook.SheetNames.includes(sheetName)) {
+      errors.push({ row: 0, field: 'sheet', message: `Sheet "${sheetName}" not found` });
+      continue;
+    }
+
+    const sheet = workbook.Sheets[sheetName];
+    const data = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as unknown[][];
+    
+    if (data.length < 2) continue;
+
+    const headers = data[0] as string[];
+    const colCupaCode = findColumn(headers, COLUMN_MAPPINGS.cupaCode);
+    const colEmployeeId = findColumn(headers, COLUMN_MAPPINGS.employeeId);
+    const colTitle = findColumn(headers, COLUMN_MAPPINGS.institutionalTitle);
+    const colLastName = findColumn(headers, COLUMN_MAPPINGS.lastName);
+    const colFirstName = findColumn(headers, COLUMN_MAPPINGS.firstName);
+    const colDivision = findColumn(headers, COLUMN_MAPPINGS.division);
+    const colDepartment = findColumn(headers, COLUMN_MAPPINGS.department);
+    const colSupervisor = findColumn(headers, COLUMN_MAPPINGS.supervisor);
+    const colVpStem = findColumn(headers, COLUMN_MAPPINGS.vpStem);
+
+    if (colEmployeeId === -1 && colTitle === -1) continue;
+
+    const defaultVpStem = sheetName;
+
+    for (let i = 1; i < data.length; i++) {
+      const row = data[i];
+      const rowNum = i + 1;
+
+      const hasData = row.some(cell => cell !== null && cell !== undefined && cell !== '');
+      if (!hasData) continue;
+
+      const employeeId = colEmployeeId !== -1 ? normalizeString(row[colEmployeeId]) : '';
+      const title = colTitle !== -1 ? normalizeString(row[colTitle]) : '';
+      
+      if (!employeeId && !title) { totalSkipped++; continue; }
+
+      const cupaCode = colCupaCode !== -1 ? normalizeCupaCode(row[colCupaCode]) : null;
+      const lastName = colLastName !== -1 ? normalizeString(row[colLastName]) : '';
+      const firstName = colFirstName !== -1 ? normalizeString(row[colFirstName]) : '';
+      const employeeName = [firstName, lastName].filter(Boolean).join(' ') || 'Unknown';
+      const division = colDivision !== -1 ? normalizeString(row[colDivision]) : sheetName;
+      const department = colDepartment !== -1 ? normalizeString(row[colDepartment]) : '';
+      const supervisor = colSupervisor !== -1 ? normalizeString(row[colSupervisor]) : null;
+      const vpStem = colVpStem !== -1 ? normalizeString(row[colVpStem]) : defaultVpStem;
+      const finalEmployeeId = employeeId || `GEN-${sheetName}-${i}`;
+
+      try {
+        if (cupaCode) {
+          const cupaExists = dbGet<{ cupa_code: string }>('SELECT cupa_code FROM cupa_positions WHERE cupa_code = ?', [cupaCode]);
+          if (!cupaExists) {
+            errors.push({ row: rowNum, field: 'cupa_code', message: `CUPA code ${cupaCode} not found in catalog (sheet: ${sheetName})` });
+          }
+        }
+
+        // Check if exists with same employee_id (using UPSERT pattern)
+        const existing = dbGet<{ id: number }>(
+          'SELECT id FROM position_mappings WHERE employee_id = ?',
+          [finalEmployeeId]
+        );
+
+        if (existing) {
+          dbRun(`UPDATE position_mappings SET cupa_code = ?, institutional_title = ?, employee_name = ?, division = ?, department = ?, supervisor = ?, vp_stem = ? WHERE id = ?`,
+            [cupaCode, title || 'Unknown Title', employeeName, division || 'Unknown', department || 'Unknown', supervisor, vpStem || 'Unknown', existing.id]);
+        } else {
+          dbRun(`INSERT INTO position_mappings (employee_id, cupa_code, institutional_title, employee_name, division, department, supervisor, vp_stem) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+            [finalEmployeeId, cupaCode, title || 'Unknown Title', employeeName, division || 'Unknown', department || 'Unknown', supervisor, vpStem || 'Unknown']);
+        }
+        totalImported++;
+      } catch (err) {
+        errors.push({ row: rowNum, field: 'database', message: `${sheetName}: ${String(err)}` });
+        totalSkipped++;
+      }
+    }
+  }
+
+  saveDatabase();
+  return { success: errors.length === 0, imported: totalImported, skipped: totalSkipped, errors: errors.slice(0, 100) };
+}
+
+// Column mappings for compensation data import
+const COMPENSATION_COLUMN_MAPPINGS = {
+  employeeId: ['Employee ID', 'EmployeeID', 'Employee_ID', 'EE ID', 'ID', 'Emp ID'],
+  currentSalary: ['Salary', 'Annual Salary', 'Current Salary', 'Base Salary', 'Annual Pay', 'Base Pay'],
+  hireDate: ['Hire Date', 'Start Date', 'Role Start Date', 'Date in Role', 'Position Start Date', 'Job Start Date'],
+  fte: ['FTE', 'Full Time Equivalent', 'Work %', 'Work Percent', 'Percent Time'],
+  appointmentMonths: ['Appt Months', 'Appointment', 'Contract Months', 'Months', 'Appointment Months', '10/12'],
+  compensationType: ['Comp Type', 'FLSA', 'Salaried/Hourly', 'Pay Type', 'Compensation Type', 'Exempt Status'],
+  hasHousing: ['Housing', 'Housing Benefit', 'Has Housing', 'Receives Housing'],
+  housingValue: ['Housing Value', 'Housing Amount', 'Housing Allowance'],
+};
+
+function parseDate(value: unknown): string | null {
+  if (!value) return null;
+  
+  // Handle Excel date serial number
+  if (typeof value === 'number') {
+    const date = XLSX.SSF.parse_date_code(value);
+    if (date) {
+      return `${date.y}-${String(date.m).padStart(2, '0')}-${String(date.d).padStart(2, '0')}`;
+    }
+  }
+  
+  // Handle string dates
+  const str = String(value).trim();
+  if (!str) return null;
+  
+  // Try parsing common formats
+  const date = new Date(str);
+  if (!isNaN(date.getTime())) {
+    return date.toISOString().split('T')[0];
+  }
+  
+  return null;
+}
+
+function parseNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  
+  if (typeof value === 'number') return value;
+  
+  const str = String(value).replace(/[$,]/g, '').trim();
+  const num = parseFloat(str);
+  return isNaN(num) ? null : num;
+}
+
+function parseBoolean(value: unknown): boolean {
+  if (!value) return false;
+  const str = String(value).toLowerCase().trim();
+  return ['yes', 'y', 'true', '1', 'x'].includes(str);
+}
+
+function parseCompensationType(value: unknown): 'salaried' | 'hourly' {
+  if (!value) return 'salaried';
+  const str = String(value).toLowerCase().trim();
+  if (['hourly', 'non-exempt', 'nonexempt', 'h'].includes(str)) {
+    return 'hourly';
+  }
+  return 'salaried';
+}
+
+export async function importCompensationData(buffer: Buffer, sheetName?: string): Promise<ImportResult> {
+  // Snapshot current salary data before making changes
+  const snapshotCount = snapshotSalaryHistory();
+  console.log(`Snapshotted ${snapshotCount} salary records to history before compensation import`);
+  
+  const workbook = XLSX.read(buffer, { type: 'buffer' });
+  const targetSheet = sheetName || workbook.SheetNames[0];
+  
+  if (!workbook.SheetNames.includes(targetSheet)) {
+    return { success: false, imported: 0, skipped: 0, errors: [{ row: 0, field: 'sheet', message: `Sheet "${targetSheet}" not found` }] };
+  }
+
+  const sheet = workbook.Sheets[targetSheet];
+  const data = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as unknown[][];
+  
+  if (data.length < 2) {
+    return { success: false, imported: 0, skipped: 0, errors: [{ row: 0, field: 'data', message: 'No data found in sheet' }] };
+  }
+
+  const headers = data[0] as string[];
+  const colEmployeeId = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.employeeId);
+  const colSalary = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.currentSalary);
+  const colHireDate = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.hireDate);
+  const colFte = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.fte);
+  const colAppointmentMonths = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.appointmentMonths);
+  const colCompType = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.compensationType);
+  const colHasHousing = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.hasHousing);
+  const colHousingValue = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.housingValue);
+
+  if (colEmployeeId === -1) {
+    return { success: false, imported: 0, skipped: 0, errors: [{ row: 1, field: 'Employee ID', message: `Employee ID column not found. Available headers: ${headers.join(', ')}` }] };
+  }
+
+  const errors: ImportValidationError[] = [];
+  let updated = 0;
+  let skipped = 0;
+
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const rowNum = i + 1;
+
+    const employeeId = normalizeString(row[colEmployeeId]);
+    if (!employeeId) { skipped++; continue; }
+
+    // Find existing position by employee ID
+    const position = dbGet<{ id: number }>('SELECT id FROM position_mappings WHERE employee_id = ?', [employeeId]);
+    if (!position) {
+      errors.push({ row: rowNum, field: 'employee_id', message: `Employee ID ${employeeId} not found in positions` });
+      skipped++;
+      continue;
+    }
+
+    const currentSalary = colSalary !== -1 ? parseNumber(row[colSalary]) : null;
+    const hireDate = colHireDate !== -1 ? parseDate(row[colHireDate]) : null;
+    const fte = colFte !== -1 ? parseNumber(row[colFte]) : 1.0;
+    const appointmentMonths = colAppointmentMonths !== -1 ? parseNumber(row[colAppointmentMonths]) : 12;
+    const compensationType = colCompType !== -1 ? parseCompensationType(row[colCompType]) : 'salaried';
+    const hasHousing = colHasHousing !== -1 ? parseBoolean(row[colHasHousing]) : false;
+    const housingValue = colHousingValue !== -1 ? parseNumber(row[colHousingValue]) : 15000;
+
+    try {
+      dbRun(`
+        UPDATE position_mappings SET 
+          current_salary = ?,
+          hire_date = ?,
+          fte = ?,
+          appointment_months = ?,
+          compensation_type = ?,
+          has_housing_benefit = ?,
+          housing_value = ?
+        WHERE id = ?
+      `, [
+        currentSalary,
+        hireDate,
+        fte ?? 1.0,
+        appointmentMonths ?? 12,
+        compensationType,
+        hasHousing ? 1 : 0,
+        housingValue ?? 15000,
+        position.id
+      ]);
+      updated++;
+    } catch (err) {
+      errors.push({ row: rowNum, field: 'database', message: String(err) });
+      skipped++;
+    }
+  }
+
+  saveDatabase();
+  return { success: errors.length === 0, imported: updated, skipped, errors: errors.slice(0, 100) };
+}
+
+// Column mappings for CUPA salary data import
+const CUPA_SALARY_COLUMN_MAPPINGS = {
+  cupaCode: ['CUPA #', 'CUPA Code', 'Position Number', 'Code', 'CUPA'],
+  medianSalary: ['Median', 'Median Salary', '50th Percentile', 'P50', 'Median Pay'],
+  percentile25: ['25th Percentile', 'P25', '25th', 'Q1'],
+  percentile75: ['75th Percentile', 'P75', '75th', 'Q3'],
+  sampleCount: ['N', 'Count', 'Sample', 'Sample Size', 'Institutions'],
+};
+
+export async function importCupaSalaryData(buffer: Buffer, dataYear: string, sheetName?: string): Promise<ImportResult> {
+  const workbook = XLSX.read(buffer, { type: 'buffer' });
+  const targetSheet = sheetName || workbook.SheetNames[0];
+  
+  if (!workbook.SheetNames.includes(targetSheet)) {
+    return { success: false, imported: 0, skipped: 0, errors: [{ row: 0, field: 'sheet', message: `Sheet "${targetSheet}" not found` }] };
+  }
+
+  const sheet = workbook.Sheets[targetSheet];
+  const data = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as unknown[][];
+  
+  if (data.length < 2) {
+    return { success: false, imported: 0, skipped: 0, errors: [{ row: 0, field: 'data', message: 'No data found in sheet' }] };
+  }
+
+  const headers = data[0] as string[];
+  const colCupaCode = findColumn(headers, CUPA_SALARY_COLUMN_MAPPINGS.cupaCode);
+  const colMedian = findColumn(headers, CUPA_SALARY_COLUMN_MAPPINGS.medianSalary);
+  const colP25 = findColumn(headers, CUPA_SALARY_COLUMN_MAPPINGS.percentile25);
+  const colP75 = findColumn(headers, CUPA_SALARY_COLUMN_MAPPINGS.percentile75);
+  const colSampleCount = findColumn(headers, CUPA_SALARY_COLUMN_MAPPINGS.sampleCount);
+
+  if (colCupaCode === -1) {
+    return { success: false, imported: 0, skipped: 0, errors: [{ row: 1, field: 'CUPA Code', message: `CUPA Code column not found. Available headers: ${headers.join(', ')}` }] };
+  }
+
+  if (colMedian === -1) {
+    return { success: false, imported: 0, skipped: 0, errors: [{ row: 1, field: 'Median Salary', message: `Median Salary column not found. Available headers: ${headers.join(', ')}` }] };
+  }
+
+  const errors: ImportValidationError[] = [];
+  let imported = 0;
+  let skipped = 0;
+
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const rowNum = i + 1;
+
+    const cupaCode = normalizeCupaCode(row[colCupaCode]);
+    if (!cupaCode) { skipped++; continue; }
+
+    const medianSalary = parseNumber(row[colMedian]);
+    if (medianSalary === null || medianSalary <= 0) {
+      errors.push({ row: rowNum, field: 'median_salary', message: `Invalid median salary for CUPA code ${cupaCode}` });
+      skipped++;
+      continue;
+    }
+
+    const percentile25 = colP25 !== -1 ? parseNumber(row[colP25]) : null;
+    const percentile75 = colP75 !== -1 ? parseNumber(row[colP75]) : null;
+    const sampleCount = colSampleCount !== -1 ? parseNumber(row[colSampleCount]) : null;
+
+    try {
+      // Upsert: update if exists, insert if not
+      const existing = dbGet<{ id: number }>('SELECT id FROM cupa_salary_data WHERE cupa_code = ? AND data_year = ?', [cupaCode, dataYear]);
+      
+      if (existing) {
+        dbRun(`
+          UPDATE cupa_salary_data SET 
+            median_salary = ?, percentile_25 = ?, percentile_75 = ?, sample_count = ?
+          WHERE id = ?
+        `, [medianSalary, percentile25, percentile75, sampleCount, existing.id]);
+      } else {
+        dbRun(`
+          INSERT INTO cupa_salary_data (cupa_code, data_year, median_salary, percentile_25, percentile_75, sample_count)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `, [cupaCode, dataYear, medianSalary, percentile25, percentile75, sampleCount]);
+      }
+      imported++;
+    } catch (err) {
+      errors.push({ row: rowNum, field: 'database', message: String(err) });
+      skipped++;
+    }
+  }
+
+  saveDatabase();
+  return { success: errors.length === 0, imported, skipped, errors: errors.slice(0, 100) };
+}
+
+export function getSheetNames(buffer: Buffer): string[] {
+  const workbook = XLSX.read(buffer, { type: 'buffer' });
+  return workbook.SheetNames;
+}

@@ -1,0 +1,459 @@
+import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Database file location - use data directory in project root or Docker volume
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '../../../../data');
+const DB_PATH = path.join(DATA_DIR, 'cupa.db');
+
+let db: SqlJsDatabase | null = null;
+let SQL: Awaited<ReturnType<typeof initSqlJs>> | null = null;
+
+export function getDatabase(): SqlJsDatabase {
+  if (!db) {
+    throw new Error('Database not initialized. Call initDatabase() first.');
+  }
+  return db;
+}
+
+export async function initDatabaseAsync(): Promise<SqlJsDatabase> {
+  // Ensure data directory exists
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+
+  console.log(`Initializing database at: ${DB_PATH}`);
+  
+  // Initialize sql.js
+  SQL = await initSqlJs();
+  
+  // Load existing database or create new one
+  if (fs.existsSync(DB_PATH)) {
+    const buffer = fs.readFileSync(DB_PATH);
+    db = new SQL.Database(buffer);
+    console.log('Loaded existing database');
+  } else {
+    db = new SQL.Database();
+    console.log('Created new database');
+  }
+
+  // Create tables
+  createTables(db);
+  
+  // Run migrations for existing databases
+  runMigrations(db);
+  
+  // Save after creating tables
+  saveDatabase();
+
+  return db;
+}
+
+// Synchronous init for compatibility - loads from file if exists
+export function initDatabase(): SqlJsDatabase {
+  if (db) return db;
+  
+  // This is a synchronous fallback - should use initDatabaseAsync when possible
+  throw new Error('Database not initialized. Call initDatabaseAsync() first.');
+}
+
+// Save database to file
+export function saveDatabase(): void {
+  if (!db) return;
+  const data = db.export();
+  const buffer = Buffer.from(data);
+  fs.writeFileSync(DB_PATH, buffer);
+}
+
+// Auto-save periodically
+let saveInterval: ReturnType<typeof setInterval> | null = null;
+
+export function startAutoSave(intervalMs = 5000): void {
+  if (saveInterval) return;
+  saveInterval = setInterval(saveDatabase, intervalMs);
+}
+
+export function stopAutoSave(): void {
+  if (saveInterval) {
+    clearInterval(saveInterval);
+    saveInterval = null;
+  }
+}
+
+function createTables(database: SqlJsDatabase): void {
+  database.run(`
+    -- Users table
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('system_admin', 'hr_admin', 'hr_analyst', 'vp_reviewer', 'executive', 'academic_dean')),
+      division TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  database.run(`
+    -- CUPA positions catalog
+    CREATE TABLE IF NOT EXISTS cupa_positions (
+      cupa_code TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT,
+      category TEXT,
+      bls_soc_code TEXT,
+      bls_soc_name TEXT,
+      population_type TEXT NOT NULL DEFAULT 'staff' CHECK (population_type IN ('staff', 'faculty')),
+      catalog_year TEXT NOT NULL
+    )
+  `);
+
+  database.run(`
+    -- Audit cycles
+    CREATE TABLE IF NOT EXISTS audit_cycles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT,
+      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'active', 'completed', 'archived')),
+      created_by_id INTEGER NOT NULL REFERENCES users(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  database.run(`
+    -- Position mappings (institutional positions mapped to CUPA codes)
+    CREATE TABLE IF NOT EXISTS position_mappings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id TEXT NOT NULL UNIQUE,
+      cupa_code TEXT REFERENCES cupa_positions(cupa_code),
+      institutional_title TEXT NOT NULL,
+      employee_name TEXT NOT NULL,
+      division TEXT NOT NULL,
+      department TEXT NOT NULL,
+      supervisor TEXT,
+      vp_stem TEXT NOT NULL,
+      audit_status TEXT NOT NULL DEFAULT 'pending' CHECK (audit_status IN ('pending', 'under_review', 'confirmed', 'flagged', 'resolved')),
+      assigned_reviewer_id INTEGER REFERENCES users(id),
+      review_date TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  database.run(`
+    -- VP Roles (organizational structure)
+    CREATE TABLE IF NOT EXISTS vp_roles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT UNIQUE NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      assigned_email TEXT,
+      assigned_name TEXT,
+      position_count INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  database.run(`
+    -- Review comments and history
+    CREATE TABLE IF NOT EXISTS review_comments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      position_mapping_id INTEGER NOT NULL REFERENCES position_mappings(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      comment TEXT NOT NULL,
+      flag_reason TEXT CHECK (flag_reason IN ('wrong_cupa_code', 'job_duties_changed', 'position_eliminated', 'new_position', 'other')),
+      suggested_cupa_code TEXT REFERENCES cupa_positions(cupa_code),
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  database.run(`
+    -- Mapping history (for audit trail)
+    CREATE TABLE IF NOT EXISTS mapping_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      position_mapping_id INTEGER NOT NULL REFERENCES position_mappings(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      old_cupa_code TEXT,
+      new_cupa_code TEXT,
+      old_status TEXT,
+      new_status TEXT,
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  database.run(`
+    -- CUPA salary data (median salaries by CUPA code)
+    CREATE TABLE IF NOT EXISTS cupa_salary_data (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      cupa_code TEXT NOT NULL REFERENCES cupa_positions(cupa_code),
+      data_year TEXT NOT NULL,
+      median_salary REAL NOT NULL,
+      percentile_25 REAL,
+      percentile_75 REAL,
+      sample_count INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(cupa_code, data_year)
+    )
+  `);
+
+  database.run(`
+    -- Equity analysis results (calculated gaps per position)
+    CREATE TABLE IF NOT EXISTS equity_analysis (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      position_mapping_id INTEGER NOT NULL UNIQUE REFERENCES position_mappings(id) ON DELETE CASCADE,
+      base_median REAL,
+      adjusted_median REAL,
+      total_compensation REAL,
+      equity_gap REAL,
+      gap_percentage REAL,
+      years_in_role REAL,
+      proposed_raise REAL DEFAULT 0,
+      adjustment_notes TEXT,
+      calculated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  database.run(`
+    -- Salary history for tracking year-over-year changes
+    CREATE TABLE IF NOT EXISTS salary_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      employee_id TEXT NOT NULL,
+      employee_name TEXT,
+      vp_stem TEXT,
+      department TEXT,
+      institutional_title TEXT,
+      current_salary REAL,
+      equity_gap REAL,
+      proposed_raise REAL,
+      actual_raise_given REAL,
+      data_year TEXT NOT NULL,
+      snapshot_date TEXT NOT NULL DEFAULT (datetime('now')),
+      notes TEXT,
+      UNIQUE(employee_id, data_year)
+    )
+  `);
+
+  // Add compensation columns to position_mappings if they don't exist
+  // SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so we check pragmatically
+  const columns = database.exec('PRAGMA table_info(position_mappings)');
+  const existingColumns = columns[0]?.values.map(row => row[1] as string) || [];
+  
+  const compensationColumns = [
+    { name: 'current_salary', type: 'REAL' },
+    { name: 'hire_date', type: 'TEXT' },
+    { name: 'fte', type: 'REAL DEFAULT 1.0' },
+    { name: 'appointment_months', type: 'INTEGER DEFAULT 12' },
+    { name: 'compensation_type', type: "TEXT DEFAULT 'salaried'" },
+    { name: 'has_housing_benefit', type: 'INTEGER DEFAULT 0' },
+    { name: 'housing_value', type: 'REAL DEFAULT 15000' },
+  ];
+
+  for (const col of compensationColumns) {
+    if (!existingColumns.includes(col.name)) {
+      try {
+        database.run(`ALTER TABLE position_mappings ADD COLUMN ${col.name} ${col.type}`);
+        console.log(`Added column ${col.name} to position_mappings`);
+      } catch {
+        // Column might already exist
+      }
+    }
+  }
+
+  // Create indexes
+  database.run('CREATE INDEX IF NOT EXISTS idx_position_mappings_vp_stem ON position_mappings(vp_stem)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_position_mappings_division ON position_mappings(division)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_position_mappings_audit_status ON position_mappings(audit_status)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_position_mappings_assigned_reviewer ON position_mappings(assigned_reviewer_id)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_position_mappings_cupa_code ON position_mappings(cupa_code)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_cupa_positions_category ON cupa_positions(category)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_cupa_positions_title ON cupa_positions(title)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_review_comments_position ON review_comments(position_mapping_id)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_users_division ON users(division)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_vp_roles_code ON vp_roles(code)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_vp_roles_assigned_user ON vp_roles(assigned_user_id)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_cupa_salary_data_code ON cupa_salary_data(cupa_code)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_cupa_salary_data_year ON cupa_salary_data(data_year)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_equity_analysis_position ON equity_analysis(position_mapping_id)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_position_mappings_employee_id ON position_mappings(employee_id)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_salary_history_employee ON salary_history(employee_id)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_salary_history_year ON salary_history(data_year)');
+  database.run('CREATE INDEX IF NOT EXISTS idx_salary_history_vp ON salary_history(vp_stem)');
+  
+  // Add proposed_raise column to equity_analysis if it doesn't exist (migration)
+  const eaColumns = database.exec('PRAGMA table_info(equity_analysis)');
+  const existingEaColumns = eaColumns[0]?.values.map(row => row[1] as string) || [];
+  if (!existingEaColumns.includes('proposed_raise')) {
+    try {
+      database.run('ALTER TABLE equity_analysis ADD COLUMN proposed_raise REAL DEFAULT 0');
+      console.log('Added proposed_raise column to equity_analysis');
+    } catch {
+      // Column might already exist
+    }
+  }
+
+  console.log('Database tables created/verified');
+}
+
+// Migration function to handle existing databases with audit_cycle_id
+function runMigrations(database: SqlJsDatabase): void {
+  // Check if position_mappings has audit_cycle_id column (old schema)
+  const pmColumns = database.exec('PRAGMA table_info(position_mappings)');
+  const pmColumnNames = pmColumns[0]?.values.map(row => row[1] as string) || [];
+  
+  if (pmColumnNames.includes('audit_cycle_id')) {
+    console.log('Migrating database: removing audit_cycle_id dependencies...');
+    
+    try {
+      // Create new position_mappings table without audit_cycle_id
+      database.run(`
+        CREATE TABLE IF NOT EXISTS position_mappings_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          employee_id TEXT NOT NULL UNIQUE,
+          cupa_code TEXT REFERENCES cupa_positions(cupa_code),
+          institutional_title TEXT NOT NULL,
+          employee_name TEXT NOT NULL,
+          division TEXT NOT NULL,
+          department TEXT NOT NULL,
+          supervisor TEXT,
+          vp_stem TEXT NOT NULL,
+          audit_status TEXT NOT NULL DEFAULT 'pending',
+          assigned_reviewer_id INTEGER REFERENCES users(id),
+          review_date TEXT,
+          current_salary REAL,
+          hire_date TEXT,
+          fte REAL DEFAULT 1.0,
+          appointment_months INTEGER DEFAULT 12,
+          compensation_type TEXT DEFAULT 'salaried',
+          has_housing_benefit INTEGER DEFAULT 0,
+          housing_value REAL DEFAULT 15000,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `);
+      
+      // Copy data - keep most recent entry for each employee_id
+      database.run(`
+        INSERT OR REPLACE INTO position_mappings_new 
+        (id, employee_id, cupa_code, institutional_title, employee_name, division, department, 
+         supervisor, vp_stem, audit_status, assigned_reviewer_id, review_date, 
+         current_salary, hire_date, fte, appointment_months, compensation_type, 
+         has_housing_benefit, housing_value, created_at)
+        SELECT id, employee_id, cupa_code, institutional_title, employee_name, division, department,
+               supervisor, vp_stem, audit_status, assigned_reviewer_id, review_date,
+               current_salary, hire_date, fte, appointment_months, compensation_type,
+               has_housing_benefit, housing_value, created_at
+        FROM position_mappings
+        WHERE id IN (
+          SELECT MAX(id) FROM position_mappings GROUP BY employee_id
+        )
+      `);
+      
+      // Drop old table and rename new one
+      database.run('DROP TABLE position_mappings');
+      database.run('ALTER TABLE position_mappings_new RENAME TO position_mappings');
+      
+      console.log('Migrated position_mappings table');
+    } catch (err) {
+      console.error('Error migrating position_mappings:', err);
+    }
+    
+    try {
+      // Check equity_analysis table
+      const eaColumns = database.exec('PRAGMA table_info(equity_analysis)');
+      const eaColumnNames = eaColumns[0]?.values.map(row => row[1] as string) || [];
+      
+      if (eaColumnNames.includes('audit_cycle_id')) {
+        // Create new equity_analysis table without audit_cycle_id
+        database.run(`
+          CREATE TABLE IF NOT EXISTS equity_analysis_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            position_mapping_id INTEGER NOT NULL UNIQUE REFERENCES position_mappings(id) ON DELETE CASCADE,
+            base_median REAL,
+            adjusted_median REAL,
+            total_compensation REAL,
+            equity_gap REAL,
+            gap_percentage REAL,
+            years_in_role REAL,
+            proposed_raise REAL DEFAULT 0,
+            adjustment_notes TEXT,
+            calculated_at TEXT NOT NULL DEFAULT (datetime('now'))
+          )
+        `);
+        
+        // Copy data - keep most recent analysis for each position
+        database.run(`
+          INSERT OR REPLACE INTO equity_analysis_new
+          (id, position_mapping_id, base_median, adjusted_median, total_compensation, 
+           equity_gap, gap_percentage, years_in_role, adjustment_notes, calculated_at)
+          SELECT id, position_mapping_id, base_median, adjusted_median, total_compensation,
+                 equity_gap, gap_percentage, years_in_role, adjustment_notes, calculated_at
+          FROM equity_analysis
+          WHERE id IN (
+            SELECT MAX(id) FROM equity_analysis GROUP BY position_mapping_id
+          )
+        `);
+        
+        // Drop old table and rename new one  
+        database.run('DROP TABLE equity_analysis');
+        database.run('ALTER TABLE equity_analysis_new RENAME TO equity_analysis');
+        
+        console.log('Migrated equity_analysis table');
+      }
+    } catch (err) {
+      console.error('Error migrating equity_analysis:', err);
+    }
+    
+    // Recreate indexes
+    database.run('CREATE INDEX IF NOT EXISTS idx_position_mappings_vp_stem ON position_mappings(vp_stem)');
+    database.run('CREATE INDEX IF NOT EXISTS idx_position_mappings_division ON position_mappings(division)');
+    database.run('CREATE INDEX IF NOT EXISTS idx_position_mappings_audit_status ON position_mappings(audit_status)');
+    database.run('CREATE INDEX IF NOT EXISTS idx_position_mappings_cupa_code ON position_mappings(cupa_code)');
+    database.run('CREATE INDEX IF NOT EXISTS idx_position_mappings_employee_id ON position_mappings(employee_id)');
+    database.run('CREATE INDEX IF NOT EXISTS idx_equity_analysis_position ON equity_analysis(position_mapping_id)');
+    
+    console.log('Database migration complete');
+  }
+}
+
+// Close database connection (for clean shutdown)
+export function closeDatabase(): void {
+  stopAutoSave();
+  if (db) {
+    saveDatabase();
+    db.close();
+    db = null;
+  }
+}
+
+// Helper function to run parameterized queries and get results
+export function dbAll<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T[] {
+  const db = getDatabase();
+  const stmt = db.prepare(sql);
+  stmt.bind(params);
+  const results: T[] = [];
+  while (stmt.step()) {
+    results.push(stmt.getAsObject() as T);
+  }
+  stmt.free();
+  return results;
+}
+
+export function dbGet<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T | undefined {
+  const results = dbAll<T>(sql, params);
+  return results[0];
+}
+
+export function dbRun(sql: string, params: unknown[] = []): { changes: number; lastInsertRowid: number } {
+  const db = getDatabase();
+  db.run(sql, params);
+  const changes = db.getRowsModified();
+  const lastInsertRowid = dbGet<{ id: number }>('SELECT last_insert_rowid() as id')?.id || 0;
+  saveDatabase(); // Auto-save after writes
+  return { changes, lastInsertRowid };
+}
