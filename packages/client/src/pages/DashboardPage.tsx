@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Calculator, Users, AlertCircle, Download, RefreshCw, ArrowLeft, Filter, LayoutGrid, Table as TableIcon, ChevronRight, ClipboardCheck, CheckCircle2, MessageSquare, ThumbsUp, ArrowUpRight, ArrowDownRight, Clock, Loader2, Wand2, Trash2 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -81,6 +81,7 @@ export function DashboardPage() {
   const [editingRaise, setEditingRaise] = useState<{ [key: number]: string }>({});
   const [savingRaise, setSavingRaise] = useState<number | null>(null);
   const limit = 50;
+  const raiseDebounceRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
 
   // Review mode state
   const [activeReview, setActiveReview] = useState<ActiveReview | null>(null);
@@ -483,18 +484,63 @@ export function DashboardPage() {
     loadSummaryData();
   }
 
+  // Cleanup debounce timers on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(raiseDebounceRef.current).forEach(clearTimeout);
+    };
+  }, []);
+
+  // Compute effective raise from live input (editingRaise) or server state (proposedRaise)
+  function getEffectiveRaise(positionMappingId: number, serverProposedRaise: number | null | undefined): number {
+    const editValue = editingRaise[positionMappingId];
+    if (editValue !== undefined && editValue !== '') {
+      return parseFloat(editValue.replace(/[,$]/g, '')) || 0;
+    }
+    return serverProposedRaise || 0;
+  }
+
   async function handleRaiseChange(positionMappingId: number, value: string) {
     setEditingRaise(prev => ({ ...prev, [positionMappingId]: value }));
+
+    // Clear existing debounce timer
+    if (raiseDebounceRef.current[positionMappingId]) {
+      clearTimeout(raiseDebounceRef.current[positionMappingId]);
+    }
+
+    // Debounce API save (500ms after user stops typing)
+    raiseDebounceRef.current[positionMappingId] = setTimeout(async () => {
+      const amount = parseFloat(value?.replace(/[,$]/g, '') || '0');
+      setSavingRaise(positionMappingId);
+      try {
+        await equityAnalysisApi.proposeRaise(positionMappingId, amount);
+        setPositions(prev => prev.map(p =>
+          p.positionMappingId === positionMappingId
+            ? { ...p, proposedRaise: amount }
+            : p
+        ));
+      } catch (err) {
+        console.error('Failed to save raise:', err);
+      } finally {
+        setSavingRaise(null);
+        delete raiseDebounceRef.current[positionMappingId];
+      }
+    }, 500);
   }
 
   async function handleRaiseBlur(positionMappingId: number) {
+    // Cancel any pending debounce - save immediately on blur
+    if (raiseDebounceRef.current[positionMappingId]) {
+      clearTimeout(raiseDebounceRef.current[positionMappingId]);
+      delete raiseDebounceRef.current[positionMappingId];
+    }
+
     const value = editingRaise[positionMappingId];
     const amount = parseFloat(value?.replace(/[,$]/g, '') || '0');
     
     setSavingRaise(positionMappingId);
     try {
       await equityAnalysisApi.proposeRaise(positionMappingId, amount);
-      // Update local state
       setPositions(prev => prev.map(p => 
         p.positionMappingId === positionMappingId 
           ? { ...p, proposedRaise: amount }
@@ -533,7 +579,7 @@ export function DashboardPage() {
     analyzedPositions: selectedVp.analyzedCount,
     totalPositions: selectedVp.positionCount,
     positionsWithGap: selectedVp.underpaidCount,
-    totalProposedRaises: positions.reduce((sum, p) => sum + (p.proposedRaise || 0), 0),
+    totalProposedRaises: positions.reduce((sum, p) => sum + getEffectiveRaise(p.positionMappingId, p.proposedRaise), 0),
   } : {
     totalGap: summary?.totalGap || 0,
     averageGap: summary?.averageGap || 0,
@@ -979,11 +1025,12 @@ export function DashboardPage() {
                         : null;
                       const isUnderpaid = percentOfMedian !== null && percentOfMedian < 95;
                       const isOverpaid = percentOfMedian !== null && percentOfMedian > 105;
-                      const newSalary = pos.currentSalary && pos.proposedRaise 
-                        ? pos.currentSalary + pos.proposedRaise 
+                      const effectiveRaise = getEffectiveRaise(pos.positionMappingId, pos.proposedRaise);
+                      const newSalary = pos.currentSalary && effectiveRaise > 0
+                        ? pos.currentSalary + effectiveRaise 
                         : pos.currentSalary;
-                      const remainingGap = pos.equityGap !== null && pos.proposedRaise
-                        ? pos.equityGap - pos.proposedRaise
+                      const remainingGap = pos.equityGap !== null && effectiveRaise > 0
+                        ? pos.equityGap - effectiveRaise
                         : pos.equityGap;
                       
                       return (
@@ -1022,7 +1069,7 @@ export function DashboardPage() {
                                   currentSalary={pos.totalCompensation || pos.currentSalary}
                                   adjustedMedian={pos.adjustedMedian}
                                   baseMedian={pos.baseMedian}
-                                  proposedRaise={pos.proposedRaise}
+                                  proposedRaise={effectiveRaise || null}
                                   showLabels
                                 />
                               </div>
@@ -1059,7 +1106,7 @@ export function DashboardPage() {
                                       className={`h-7 text-xs font-mono ${savingRaise === pos.positionMappingId ? 'opacity-50' : ''}`}
                                       disabled={savingRaise === pos.positionMappingId}
                                     />
-                                    {pos.proposedRaise && pos.proposedRaise > 0 && (
+                                    {effectiveRaise > 0 && (
                                       <div className="text-xs">
                                         <span className="text-muted-foreground">New: </span>
                                         <span className="font-mono text-blue-600">{formatCurrency(newSalary)}</span>
@@ -1203,7 +1250,9 @@ export function DashboardPage() {
                             </tr>
                           </thead>
                           <tbody>
-                            {positions.map(pos => (
+                            {positions.map(pos => {
+                              const tableEffectiveRaise = getEffectiveRaise(pos.positionMappingId, pos.proposedRaise);
+                              return (
                               <tr key={pos.id} className="border-t hover:bg-muted/30">
                                 <td className="p-3">
                                   <div className="font-medium">{pos.employeeName}</div>
@@ -1224,7 +1273,7 @@ export function DashboardPage() {
                                   <SalaryRangeBarCompact 
                                     currentSalary={pos.totalCompensation || pos.currentSalary}
                                     adjustedMedian={pos.adjustedMedian}
-                                    proposedRaise={pos.proposedRaise}
+                                    proposedRaise={tableEffectiveRaise || null}
                                   />
                                 </td>
                                 <td className="p-3 text-right font-mono">
@@ -1250,7 +1299,8 @@ export function DashboardPage() {
                                   />
                                 </td>
                               </tr>
-                            ))}
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -1309,7 +1359,7 @@ export function DashboardPage() {
                   const hrAllocated = activeReview.allocatedBudget || 0;
                   const supplemental = parseFloat(vpSupplementalFunding.replace(/[,$]/g, '')) || 0;
                   const totalBudget = hrAllocated + supplemental;
-                  const totalProposed = positions.reduce((sum, p) => sum + (p.proposedRaise || 0), 0);
+                  const totalProposed = positions.reduce((sum, p) => sum + getEffectiveRaise(p.positionMappingId, p.proposedRaise), 0);
                   const remaining = totalBudget - totalProposed;
                   const isOverBudget = remaining < 0;
                   
@@ -1523,7 +1573,7 @@ export function DashboardPage() {
                   <div>
                     <div className="text-sm text-muted-foreground">Proposed</div>
                     <div className="text-lg font-bold">
-                      {formatCurrency(positions.reduce((sum, p) => sum + (p.proposedRaise || 0), 0))}
+                      {formatCurrency(positions.reduce((sum, p) => sum + getEffectiveRaise(p.positionMappingId, p.proposedRaise), 0))}
                     </div>
                   </div>
                   <div>
