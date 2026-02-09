@@ -102,6 +102,56 @@ equityAnalysisRouter.get('/by-vp', (req: Request, res: Response) => {
   res.json(vpSummary);
 });
 
+// Get all comparison group medians for a specific CUPA code
+equityAnalysisRouter.get('/salary-comparisons/:cupaCode', (req: Request, res: Response) => {
+  const { cupaCode } = req.params;
+  const dataYear = req.query.dataYear as string | undefined;
+
+  let query = 'SELECT comparison_group, median_salary, data_year FROM cupa_salary_data WHERE cupa_code = ?';
+  const params: unknown[] = [cupaCode];
+
+  if (dataYear) {
+    query += ' AND data_year = ?';
+    params.push(dataYear);
+  }
+
+  query += ' ORDER BY comparison_group';
+
+  const rows = dbAll<{ comparison_group: string; median_salary: number; data_year: string }>(query, params);
+  res.json(rows);
+});
+
+// Get all comparison group medians for multiple CUPA codes at once
+equityAnalysisRouter.get('/salary-comparisons', (req: Request, res: Response) => {
+  const dataYear = req.query.dataYear as string | undefined;
+  const cupaCodes = req.query.cupaCodes as string | undefined;
+
+  if (!cupaCodes) {
+    res.json([]);
+    return;
+  }
+
+  const codes = cupaCodes.split(',').map(c => c.trim()).filter(Boolean);
+  if (codes.length === 0) {
+    res.json([]);
+    return;
+  }
+
+  const placeholders = codes.map(() => '?').join(',');
+  let query = `SELECT cupa_code, comparison_group, median_salary FROM cupa_salary_data WHERE cupa_code IN (${placeholders})`;
+  const params: unknown[] = [...codes];
+
+  if (dataYear) {
+    query += ' AND data_year = ?';
+    params.push(dataYear);
+  }
+
+  query += ' ORDER BY cupa_code, comparison_group';
+
+  const rows = dbAll<{ cupa_code: string; comparison_group: string; median_salary: number }>(query, params);
+  res.json(rows);
+});
+
 // Get detailed equity analysis for positions, optionally filtered by VP
 equityAnalysisRouter.get('/positions', (req: Request, res: Response) => {
   const authReq = req as AuthenticatedRequest;

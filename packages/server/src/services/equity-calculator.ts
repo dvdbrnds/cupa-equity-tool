@@ -201,7 +201,26 @@ export function runEquityAnalysis(dataYear: string): {
     return { success: false, analyzed: 0, errors: 0, message: 'No positions found' };
   }
   
-  // Get unique CUPA codes and their salary data
+  // Determine the primary comparison group for equity gap calculation.
+  // Prefer "Budget" (broadest peer set), then "Student FTE", then "Staff FTE", then any available.
+  const preferredGroups = ['Budget', 'Student FTE', 'Staff FTE'];
+  const availableGroups = dbAll<{ comparison_group: string; cnt: number }>(`
+    SELECT comparison_group, COUNT(*) as cnt FROM cupa_salary_data WHERE data_year = ? GROUP BY comparison_group ORDER BY cnt DESC
+  `, [dataYear]);
+  
+  let primaryGroup = 'default';
+  for (const pref of preferredGroups) {
+    if (availableGroups.some(g => g.comparison_group === pref)) {
+      primaryGroup = pref;
+      break;
+    }
+  }
+  // If none of the preferred groups exist, use whichever has the most data
+  if (primaryGroup === 'default' && availableGroups.length > 0) {
+    primaryGroup = availableGroups[0].comparison_group;
+  }
+
+  // Get unique CUPA codes and their salary data from the primary comparison group
   const cupaCodes = [...new Set(positions.filter(p => p.cupa_code).map(p => p.cupa_code))];
   const salaryDataMap = new Map<string, CupaSalary>();
   
@@ -209,8 +228,8 @@ export function runEquityAnalysis(dataYear: string): {
     const salaryData = dbGet<CupaSalary>(`
       SELECT median_salary, percentile_25, percentile_75 
       FROM cupa_salary_data 
-      WHERE cupa_code = ? AND data_year = ?
-    `, [code, dataYear]);
+      WHERE cupa_code = ? AND data_year = ? AND comparison_group = ?
+    `, [code, dataYear, primaryGroup]);
     
     if (salaryData) {
       salaryDataMap.set(code!, salaryData);

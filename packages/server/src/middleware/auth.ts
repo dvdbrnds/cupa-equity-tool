@@ -145,9 +145,9 @@ export function canAccessDivision(user: JwtPayload, division: string): boolean {
     return true;
   }
   
-  // Check if user is assigned to this division via VP role
-  const userVpCode = getVpRoleCodeByEmail(user.email);
-  return userVpCode === division;
+  // Use the division stored on the user record first, then fall back to vp_roles lookup
+  const userDivision = user.division || getVpRoleCodeByEmail(user.email);
+  return userDivision === division;
 }
 
 // Helper to get division filter for queries
@@ -157,7 +157,6 @@ export function getDivisionFilter(user: JwtPayload): string | null {
     return null;
   }
   
-  // Get the VP role code this user is assigned to by email
-  const vpRoleCode = getVpRoleCodeByEmail(user.email);
-  return vpRoleCode;
+  // Use the division stored on the user record first, then fall back to vp_roles lookup
+  return user.division || getVpRoleCodeByEmail(user.email);
 }

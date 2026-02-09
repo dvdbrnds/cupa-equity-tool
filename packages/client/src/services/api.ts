@@ -292,6 +292,16 @@ export const dashboardApi = {
     const params = auditCycleId ? `?auditCycleId=${auditCycleId}` : '';
     return fetchApi<Record<string, number>>(`/dashboard/status-summary${params}`);
   },
+
+  getDataHealth: () =>
+    fetchApi<{
+      cupaCatalog: { imported: boolean; count: number; year: string | null };
+      positions: { imported: boolean; count: number };
+      compensation: { imported: boolean; matchedCount: number; unmatchedCount: number };
+      cupaSalary: { imported: boolean; count: number; year: string | null };
+      equityAnalysis: { calculated: boolean; analyzedCount: number; lastCalculated: string | null };
+      activeCycle: { exists: boolean; name: string | null; status: string | null };
+    }>('/dashboard/data-health'),
 };
 
 // Import API
@@ -376,6 +386,12 @@ export const importApi = {
     return response.json() as Promise<ImportResult>;
   },
 
+  generateFakeCompensation: () =>
+    fetchApi<{ success: boolean; message: string; stats?: { total: number; salaried: number; hourly: number; housing: number } }>(
+      '/import/generate-fake-compensation',
+      { method: 'POST' }
+    ),
+
   importCupaSalary: async (file: File, dataYear: string, sheetName?: string) => {
     const formData = new FormData();
     formData.append('file', file);
@@ -391,6 +407,22 @@ export const importApi = {
       throw new ApiError(error.message, response.status);
     }
     return response.json() as Promise<ImportResult>;
+  },
+
+  previewComparisonGroups: async (file: File, sheetName?: string) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (sheetName) formData.append('sheetName', sheetName);
+    const response = await fetch(`${API_BASE}/import/preview-comparison-groups`, {
+      method: 'POST',
+      credentials: 'include',
+      body: formData,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ message: 'Preview failed' }));
+      throw new ApiError(error.message, response.status);
+    }
+    return response.json() as Promise<{ groups: Array<{ name: string; columnIndex: number }> }>;
   },
 };
 
@@ -469,6 +501,14 @@ export const equityAnalysisApi = {
 
   getSalaryDataYears: () =>
     fetchApi<Array<{ data_year: string; count: number }>>('/equity-analysis/salary-data-years'),
+
+  getSalaryComparisons: (cupaCodes: string[], dataYear?: string) => {
+    const params = new URLSearchParams({ cupaCodes: cupaCodes.join(',') });
+    if (dataYear) params.set('dataYear', dataYear);
+    return fetchApi<Array<{ cupa_code: string; comparison_group: string; median_salary: number }>>(
+      `/equity-analysis/salary-comparisons?${params}`
+    );
+  },
 
   // Salary History endpoints
   getHistoryYears: () =>
@@ -598,6 +638,25 @@ export const reviewCyclesApi = {
   delete: (id: number) =>
     fetchApi<{ success: boolean; message: string }>(`/review-cycles/${id}`, {
       method: 'DELETE',
+    }),
+
+  previewAllocations: (totalBudget: number) =>
+    fetchApi<{
+      allocations: Array<{
+        vpStem: string;
+        vpTitle: string | null;
+        totalGap: number;
+        gapPercentage: number;
+        allocatedBudget: number;
+        positionCount: number;
+        underpaidCount: number;
+        analyzedCount: number;
+      }>;
+      overallTotalGap: number;
+      totalBudget: number;
+    }>('/review-cycles/preview-allocations', {
+      method: 'POST',
+      body: JSON.stringify({ totalBudget }),
     }),
 
   initializeAllocations: (id: number, totalBudget?: number) =>
@@ -743,6 +802,11 @@ export const reviewCyclesApi = {
     ),
 
   // PC (President's Cabinet) workflow
+  downloadPcReport: (cycleId: number) => {
+    // Open PDF in new tab – the endpoint streams the file with Content-Disposition
+    window.open(`${API_BASE}/review-cycles/${cycleId}/pc-report`, '_blank');
+  },
+
   submitToPc: (cycleId: number, notes?: string) =>
     fetchApi<{ success: boolean; message: string; totalProposed: number; employeeCount: number }>(
       `/review-cycles/${cycleId}/submit-to-pc`,

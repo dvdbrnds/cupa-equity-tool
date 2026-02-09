@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Upload, FileSpreadsheet, CheckCircle, AlertCircle } from 'lucide-react';
+import { Upload, FileSpreadsheet, CheckCircle, AlertCircle, Wand2 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { LoadingSpinner } from '@/components/ui/loading-spinner';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { importApi } from '@/services/api';
 import type { ImportResult } from '@cupa/shared';
 
@@ -39,6 +40,10 @@ export function ImportPage() {
   const [isLoadingSheets, setIsLoadingSheets] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importType, setImportType] = useState<'cupa' | 'positions' | 'compensation' | 'salary' | null>(null);
+  
+  // Fake data generation
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generateResult, setGenerateResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // Load sheets when CUPA catalog file is selected
   useEffect(() => {
@@ -192,6 +197,22 @@ export function ImportPage() {
       });
     } finally {
       setIsImporting(false);
+    }
+  };
+
+  const handleGenerateFakeCompensation = async () => {
+    setIsGenerating(true);
+    setGenerateResult(null);
+    try {
+      const result = await importApi.generateFakeCompensation();
+      setGenerateResult(result);
+    } catch (error) {
+      setGenerateResult({
+        success: false,
+        message: error instanceof Error ? error.message : 'Generation failed',
+      });
+    } finally {
+      setIsGenerating(false);
     }
   };
 
@@ -584,6 +605,52 @@ export function ImportPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Test Data Generator */}
+      <Card className="border-dashed border-2 border-purple-200 dark:border-purple-800 bg-purple-50/30 dark:bg-purple-950/10">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Wand2 className="h-5 w-5 text-purple-600" />
+            Generate Test Compensation Data
+          </CardTitle>
+          <CardDescription>
+            No real compensation file? Generate realistic fake salary data for all imported positions.
+            Creates a mix of salaried and hourly workers with varied FTE, tenure, and housing benefits.
+            If CUPA salary data is imported first, salaries will be calibrated to CUPA medians.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {generateResult && (
+            <Alert variant={generateResult.success ? 'default' : 'destructive'}>
+              {generateResult.success ? (
+                <CheckCircle className="h-4 w-4" />
+              ) : (
+                <AlertCircle className="h-4 w-4" />
+              )}
+              <AlertTitle>{generateResult.success ? 'Success' : 'Error'}</AlertTitle>
+              <AlertDescription>{generateResult.message}</AlertDescription>
+            </Alert>
+          )}
+          <Button
+            onClick={handleGenerateFakeCompensation}
+            disabled={isGenerating}
+            variant="outline"
+            className="border-purple-300 text-purple-700 hover:bg-purple-100 dark:border-purple-700 dark:text-purple-300"
+          >
+            {isGenerating ? (
+              <>
+                <LoadingSpinner size="sm" className="mr-2" />
+                Generating...
+              </>
+            ) : (
+              <>
+                <Wand2 className="h-4 w-4 mr-2" />
+                Generate Fake Compensation Data
+              </>
+            )}
+          </Button>
+        </CardContent>
+      </Card>
 
       {/* Instructions */}
       <Card>

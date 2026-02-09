@@ -1,19 +1,42 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Search, Filter, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { LoadingSpinner } from '@/components/ui/loading-spinner';
-import { positionsApi } from '@/services/api';
-import type { PositionMappingWithCupa, PaginatedResponse } from '@cupa/shared';
+import { SalaryRangeBarCompact } from '@/components/ui/salary-range-bar';
+import { positionsApi, equityAnalysisApi } from '@/services/api';
+import type {
+  PositionMappingWithCupa,
+  PaginatedResponse,
+  EquityAnalysisWithPosition,
+} from '@cupa/shared';
 import { AUDIT_STATUSES } from '@cupa/shared';
 import { debounce } from '@/lib/utils';
 
+function formatCurrency(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '-';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
 export function PositionsPage() {
-  const [positions, setPositions] = useState<PaginatedResponse<PositionMappingWithCupa> | null>(null);
+  const [positions, setPositions] = useState<PaginatedResponse<PositionMappingWithCupa> | null>(
+    null
+  );
+  const [equityMap, setEquityMap] = useState<Record<number, EquityAnalysisWithPosition>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('');
@@ -32,6 +55,30 @@ export function PositionsPage() {
         vpStem: vpStemFilter || undefined,
       });
       setPositions(data);
+
+      // Load equity data for the current page of positions
+      try {
+        // Get equity data for the visible VP stems
+        const uniqueVpStems = [
+          ...new Set(data.data.map((p) => p.vpStem).filter(Boolean)),
+        ];
+        const equityResults: EquityAnalysisWithPosition[] = [];
+        for (const vpStem of uniqueVpStems) {
+          const eqData = await equityAnalysisApi.getPositions({
+            vpStem,
+            limit: 500,
+          });
+          equityResults.push(...eqData.data);
+        }
+        const map: Record<number, EquityAnalysisWithPosition> = {};
+        equityResults.forEach((eq) => {
+          map[eq.positionMappingId] = eq;
+        });
+        setEquityMap(map);
+      } catch {
+        // Equity data may not be available
+        setEquityMap({});
+      }
     } catch (error) {
       console.error('Failed to load positions:', error);
     } finally {
@@ -57,12 +104,20 @@ export function PositionsPage() {
 
   const getStatusBadge = (status: string) => {
     const config = AUDIT_STATUSES[status as keyof typeof AUDIT_STATUSES];
-    const variant = status === 'confirmed' ? 'success' :
-                   status === 'flagged' ? 'red' :
-                   status === 'resolved' ? 'purple' :
-                   status === 'pending' ? 'warning' : 'gray';
+    const variant =
+      status === 'confirmed'
+        ? 'success'
+        : status === 'flagged'
+          ? 'red'
+          : status === 'resolved'
+            ? 'purple'
+            : status === 'pending'
+              ? 'warning'
+              : 'gray';
     return <Badge variant={variant}>{config?.label || status}</Badge>;
   };
+
+  const hasEquityData = Object.keys(equityMap).length > 0;
 
   return (
     <div className="space-y-6">
@@ -86,28 +141,44 @@ export function PositionsPage() {
               />
             </div>
             <div className="flex gap-2">
-              <Select value={statusFilter || 'all'} onValueChange={(v) => { setStatusFilter(v === 'all' ? '' : v); setPage(1); }}>
+              <Select
+                value={statusFilter || 'all'}
+                onValueChange={(v) => {
+                  setStatusFilter(v === 'all' ? '' : v);
+                  setPage(1);
+                }}
+              >
                 <SelectTrigger className="w-[150px]">
                   <SelectValue placeholder="All Statuses" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Statuses</SelectItem>
                   {Object.entries(AUDIT_STATUSES).map(([key, { label }]) => (
-                    <SelectItem key={key} value={key}>{label}</SelectItem>
+                    <SelectItem key={key} value={key}>
+                      {label}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              <Select value={vpStemFilter || 'all'} onValueChange={(v) => { setVpStemFilter(v === 'all' ? '' : v); setPage(1); }}>
+              <Select
+                value={vpStemFilter || 'all'}
+                onValueChange={(v) => {
+                  setVpStemFilter(v === 'all' ? '' : v);
+                  setPage(1);
+                }}
+              >
                 <SelectTrigger className="w-[200px]">
                   <SelectValue placeholder="All Divisions" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Divisions</SelectItem>
-                  {vpStems.filter(({ vpStem }) => vpStem && vpStem.trim() !== '').map(({ vpStem, count }) => (
-                    <SelectItem key={vpStem} value={vpStem}>
-                      {vpStem.length > 30 ? vpStem.slice(0, 30) + '...' : vpStem} ({count})
-                    </SelectItem>
-                  ))}
+                  {vpStems
+                    .filter(({ vpStem }) => vpStem && vpStem.trim() !== '')
+                    .map(({ vpStem, count }) => (
+                      <SelectItem key={vpStem} value={vpStem}>
+                        {vpStem.length > 30 ? vpStem.slice(0, 30) + '...' : vpStem} ({count})
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
             </div>
@@ -138,50 +209,110 @@ export function PositionsPage() {
                   <thead>
                     <tr className="border-b">
                       <th className="text-left py-3 px-4 font-medium">Employee</th>
-                      <th className="text-left py-3 px-4 font-medium">Institutional Title</th>
+                      <th className="text-left py-3 px-4 font-medium">
+                        Institutional Title
+                      </th>
                       <th className="text-left py-3 px-4 font-medium">CUPA Mapping</th>
                       <th className="text-left py-3 px-4 font-medium">Division</th>
+                      {hasEquityData && (
+                        <>
+                          <th className="text-right py-3 px-4 font-medium">Salary</th>
+                          <th className="text-right py-3 px-4 font-medium">Gap</th>
+                          <th className="text-center py-3 px-4 font-medium">Range</th>
+                        </>
+                      )}
                       <th className="text-left py-3 px-4 font-medium">Status</th>
                       <th className="text-right py-3 px-4 font-medium">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {positions?.data.map((position) => (
-                      <tr key={position.id} className="border-b hover:bg-muted/50">
-                        <td className="py-3 px-4">
-                          <div>
-                            <p className="font-medium">{position.employeeName}</p>
-                            <p className="text-xs text-muted-foreground">{position.employeeId}</p>
-                          </div>
-                        </td>
-                        <td className="py-3 px-4">{position.institutionalTitle}</td>
-                        <td className="py-3 px-4">
-                          {position.cupaCode ? (
+                    {positions?.data.map((position) => {
+                      const equity = equityMap[position.id];
+                      return (
+                        <tr key={position.id} className="border-b hover:bg-muted/50">
+                          <td className="py-3 px-4">
                             <div>
-                              <p className="font-mono text-sm">{position.cupaCode}</p>
-                              <p className="text-xs text-muted-foreground truncate max-w-[200px]">
-                                {position.cupaTitle}
+                              <p className="font-medium">{position.employeeName}</p>
+                              <p className="text-xs text-muted-foreground">
+                                {position.employeeId}
                               </p>
                             </div>
-                          ) : (
-                            <span className="text-muted-foreground italic">Not mapped</span>
+                          </td>
+                          <td className="py-3 px-4">{position.institutionalTitle}</td>
+                          <td className="py-3 px-4">
+                            {position.cupaCode ? (
+                              <div>
+                                <p className="font-mono text-sm">{position.cupaCode}</p>
+                                <p className="text-xs text-muted-foreground truncate max-w-[200px]">
+                                  {position.cupaTitle}
+                                </p>
+                              </div>
+                            ) : (
+                              <span className="text-muted-foreground italic">
+                                Not mapped
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-4">
+                            <p
+                              className="truncate max-w-[150px]"
+                              title={position.vpStem}
+                            >
+                              {position.vpStem}
+                            </p>
+                          </td>
+                          {hasEquityData && (
+                            <>
+                              <td className="py-3 px-4 text-right font-mono text-sm">
+                                {equity
+                                  ? formatCurrency(equity.currentSalary)
+                                  : formatCurrency(position.currentSalary) || '-'}
+                              </td>
+                              <td className="py-3 px-4 text-right font-mono text-sm">
+                                {equity ? (
+                                  <span
+                                    className={
+                                      equity.equityGap && equity.equityGap > 0
+                                        ? 'text-red-600 font-semibold'
+                                        : 'text-green-600'
+                                    }
+                                  >
+                                    {formatCurrency(equity.equityGap)}
+                                  </span>
+                                ) : (
+                                  '-'
+                                )}
+                              </td>
+                              <td className="py-3 px-4">
+                                {equity ? (
+                                  <SalaryRangeBarCompact
+                                    currentSalary={
+                                      equity.totalCompensation || equity.currentSalary
+                                    }
+                                    adjustedMedian={equity.adjustedMedian}
+                                    proposedRaise={
+                                      equity.proposedRaise > 0
+                                        ? equity.proposedRaise
+                                        : null
+                                    }
+                                  />
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">-</span>
+                                )}
+                              </td>
+                            </>
                           )}
-                        </td>
-                        <td className="py-3 px-4">
-                          <p className="truncate max-w-[150px]" title={position.vpStem}>
-                            {position.vpStem}
-                          </p>
-                        </td>
-                        <td className="py-3 px-4">
-                          {getStatusBadge(position.auditStatus)}
-                        </td>
-                        <td className="py-3 px-4 text-right">
-                          <Button asChild variant="ghost" size="sm">
-                            <Link to={`/positions/${position.id}`}>View</Link>
-                          </Button>
-                        </td>
-                      </tr>
-                    ))}
+                          <td className="py-3 px-4">
+                            {getStatusBadge(position.auditStatus)}
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <Button asChild variant="ghost" size="sm">
+                              <Link to={`/positions/${position.id}`}>View</Link>
+                            </Button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -196,7 +327,7 @@ export function PositionsPage() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setPage(p => p - 1)}
+                      onClick={() => setPage((p) => p - 1)}
                       disabled={page <= 1}
                     >
                       <ChevronLeft className="h-4 w-4" />
@@ -205,7 +336,7 @@ export function PositionsPage() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setPage(p => p + 1)}
+                      onClick={() => setPage((p) => p + 1)}
                       disabled={page >= positions.totalPages}
                     >
                       Next

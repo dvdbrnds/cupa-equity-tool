@@ -215,19 +215,51 @@ function createTables(database: SqlJsDatabase): void {
   `);
 
   database.run(`
-    -- CUPA salary data (median salaries by CUPA code)
+    -- CUPA salary data (median salaries by CUPA code, per comparison group)
     CREATE TABLE IF NOT EXISTS cupa_salary_data (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       cupa_code TEXT NOT NULL REFERENCES cupa_positions(cupa_code),
       data_year TEXT NOT NULL,
+      comparison_group TEXT NOT NULL DEFAULT 'default',
       median_salary REAL NOT NULL,
       percentile_25 REAL,
       percentile_75 REAL,
       sample_count INTEGER,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      UNIQUE(cupa_code, data_year)
+      UNIQUE(cupa_code, data_year, comparison_group)
     )
   `);
+
+  // Migration: recreate cupa_salary_data if it has the old unique constraint UNIQUE(cupa_code, data_year)
+  // instead of the new UNIQUE(cupa_code, data_year, comparison_group).
+  // We check the CREATE TABLE SQL for the old constraint pattern.
+  try {
+    const tableInfo = database.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='cupa_salary_data'");
+    const createSql = tableInfo.length > 0 && tableInfo[0].values.length > 0 ? String(tableInfo[0].values[0][0]) : '';
+    // Detect old schema: has UNIQUE(cupa_code, data_year) without comparison_group in the constraint
+    const needsMigration = createSql && createSql.includes('UNIQUE(cupa_code, data_year)') && !createSql.includes('UNIQUE(cupa_code, data_year, comparison_group)');
+    if (needsMigration) {
+      console.log('Migrating cupa_salary_data: recreating table with comparison_group in unique constraint...');
+      database.run('DROP TABLE IF EXISTS cupa_salary_data');
+      database.run(`
+        CREATE TABLE cupa_salary_data (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          cupa_code TEXT NOT NULL REFERENCES cupa_positions(cupa_code),
+          data_year TEXT NOT NULL,
+          comparison_group TEXT NOT NULL DEFAULT 'default',
+          median_salary REAL NOT NULL,
+          percentile_25 REAL,
+          percentile_75 REAL,
+          sample_count INTEGER,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(cupa_code, data_year, comparison_group)
+        )
+      `);
+      console.log('Migration complete.');
+    }
+  } catch (_e) {
+    // Ignore migration errors
+  }
 
   database.run(`
     -- Equity analysis results (calculated gaps per position)
@@ -273,7 +305,7 @@ function createTables(database: SqlJsDatabase): void {
       name TEXT NOT NULL,
       fiscal_year TEXT NOT NULL,
       total_budget REAL,
-      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'calculating', 'pending_vp_review', 'vp_review_in_progress', 'hr_final_review', 'approved', 'implemented', 'archived')),
+      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'calculating', 'pending_vp_review', 'vp_review_in_progress', 'hr_final_review', 'pending_pc_approval', 'pc_approved', 'pc_rejected', 'approved', 'implemented', 'archived')),
       cupa_data_year TEXT,
       deadline TEXT,
       created_by_id INTEGER NOT NULL REFERENCES users(id),
@@ -289,7 +321,7 @@ function createTables(database: SqlJsDatabase): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       cycle_id INTEGER NOT NULL REFERENCES equity_review_cycles(id) ON DELETE CASCADE,
       vp_stem TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_review', 'approved', 'changes_requested', 'hr_revised')),
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_review', 'approved', 'changes_requested', 'hr_revised', 'finalized')),
       allocated_budget REAL,
       proposed_total REAL,
       employee_count INTEGER,
@@ -506,6 +538,66 @@ function runMigrations(database: SqlJsDatabase): void {
     database.run('CREATE INDEX IF NOT EXISTS idx_equity_analysis_position ON equity_analysis(position_mapping_id)');
     
     console.log('Database migration complete');
+  }
+
+  // Migrate equity_review_cycles to add PC workflow statuses to CHECK constraint
+  const ercTableInfo = database.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='equity_review_cycles'");
+  const ercCreateSql = ercTableInfo[0]?.values[0]?.[0] as string || '';
+  
+  if (ercCreateSql && !ercCreateSql.includes('pending_pc_approval')) {
+    console.log('Migrating equity_review_cycles to add PC workflow statuses...');
+    try {
+      database.run(`
+        CREATE TABLE equity_review_cycles_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          fiscal_year TEXT NOT NULL,
+          total_budget REAL,
+          status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'calculating', 'pending_vp_review', 'vp_review_in_progress', 'hr_final_review', 'pending_pc_approval', 'pc_approved', 'pc_rejected', 'approved', 'implemented', 'archived')),
+          cupa_data_year TEXT,
+          deadline TEXT,
+          created_by_id INTEGER NOT NULL REFERENCES users(id),
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          notes TEXT,
+          pc_submitted_at TEXT DEFAULT NULL,
+          pc_submitted_by_id INTEGER DEFAULT NULL,
+          pc_vote_date TEXT DEFAULT NULL,
+          pc_vote_result TEXT DEFAULT NULL,
+          pc_vote_notes TEXT DEFAULT NULL
+        )
+      `);
+      
+      // Get column names from old table to handle migration gracefully
+      const oldCols = database.exec('PRAGMA table_info(equity_review_cycles)');
+      const oldColNames = oldCols[0]?.values.map(row => row[1] as string) || [];
+      const hasPcCols = oldColNames.includes('pc_submitted_at');
+      
+      if (hasPcCols) {
+        database.run(`
+          INSERT INTO equity_review_cycles_new 
+          SELECT id, name, fiscal_year, total_budget, status, cupa_data_year, deadline,
+                 created_by_id, created_at, updated_at, notes,
+                 pc_submitted_at, pc_submitted_by_id, pc_vote_date, pc_vote_result, pc_vote_notes
+          FROM equity_review_cycles
+        `);
+      } else {
+        database.run(`
+          INSERT INTO equity_review_cycles_new (id, name, fiscal_year, total_budget, status, cupa_data_year, deadline,
+                 created_by_id, created_at, updated_at, notes)
+          SELECT id, name, fiscal_year, total_budget, status, cupa_data_year, deadline,
+                 created_by_id, created_at, updated_at, notes
+          FROM equity_review_cycles
+        `);
+      }
+      
+      database.run('DROP TABLE equity_review_cycles');
+      database.run('ALTER TABLE equity_review_cycles_new RENAME TO equity_review_cycles');
+      
+      console.log('Successfully migrated equity_review_cycles table');
+    } catch (err) {
+      console.error('Failed to migrate equity_review_cycles:', err);
+    }
   }
 
   // Add vp_supplemental_offer column to vp_review_status if it doesn't exist

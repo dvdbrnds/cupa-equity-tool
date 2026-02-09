@@ -18,9 +18,16 @@ data/
 
 # IDE
 .idea/
+.vscode/
 *.swp
 *.swo
 .DS_Store
+
+# Sensitive data files
+*.xlsx
+
+# Legacy/duplicate project folder
+cupa-equity-tool/
 
 # Logs
 logs/

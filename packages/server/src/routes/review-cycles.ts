@@ -4,6 +4,7 @@ import { dbAll, dbGet, dbRun, saveDatabase } from '../db/init.js';
 import { requireAuth, requireEditor, getDivisionFilter, type AuthenticatedRequest } from '../middleware/auth.js';
 import { BadRequestError, NotFoundError, ForbiddenError } from '../middleware/error-handler.js';
 import { getEquitySummaryByVp, calculateBudgetAllocation } from '../services/equity-calculator.js';
+import { generatePcReport } from '../services/pc-report-generator.js';
 import type { 
   EquityReviewCycleWithStats, 
   ReviewCycleStatus,
@@ -221,6 +222,33 @@ reviewCyclesRouter.patch('/:id', requireEditor, (req: Request, res: Response) =>
   res.json({ success: true, message: 'Review cycle updated' });
 });
 
+// Preview VP allocations (dry-run calculation without saving)
+reviewCyclesRouter.post('/preview-allocations', requireEditor, (req: Request, res: Response) => {
+  const { totalBudget } = req.body;
+  
+  if (!totalBudget || totalBudget <= 0) {
+    throw new BadRequestError('Total budget is required and must be positive');
+  }
+  
+  const vpSummary = getEquitySummaryByVp();
+  const allocations = calculateBudgetAllocation(totalBudget);
+  
+  const overallTotalGap = vpSummary.reduce((sum, vp) => sum + Math.max(0, vp.totalGap), 0);
+  
+  res.json({
+    allocations: allocations.map(a => {
+      const vpData = vpSummary.find(v => v.vpStem === a.vpStem);
+      return {
+        ...a,
+        underpaidCount: vpData?.underpaidCount || 0,
+        analyzedCount: vpData?.analyzedCount || 0,
+      };
+    }),
+    overallTotalGap,
+    totalBudget,
+  });
+});
+
 // Initialize VP allocations for a cycle (based on current equity analysis)
 reviewCyclesRouter.post('/:id/initialize-allocations', requireEditor, (req: Request, res: Response) => {
   const { id } = req.params;
@@ -380,7 +408,6 @@ reviewCyclesRouter.get('/my-reviews/pending', (req: Request, res: Response) => {
     JOIN equity_review_cycles rc ON vrs.cycle_id = rc.id
     LEFT JOIN vp_roles vr ON vrs.vp_stem = vr.code
     WHERE vrs.vp_stem = ? 
-      AND vrs.status != 'pending'
       AND rc.status != 'archived'
     ORDER BY 
       CASE vrs.status 
@@ -956,7 +983,7 @@ reviewCyclesRouter.post('/:cycleId/hr-approve-vp/:vpStem', requireEditor, (req: 
   res.json({ success: true, message: 'VP review approved and finalized' });
 });
 
-// Finalize cycle (HR approves all)
+// Finalize cycle (HR moves to final review)
 reviewCyclesRouter.post('/:id/finalize', requireEditor, (req: Request, res: Response) => {
   const { id } = req.params;
   
@@ -975,13 +1002,20 @@ reviewCyclesRouter.post('/:id/finalize', requireEditor, (req: Request, res: Resp
     throw new BadRequestError(`${unresolved.count} VP review(s) are still pending`);
   }
   
+  // If already in hr_final_review, move to approved (skip PC)
+  // Otherwise move to hr_final_review so HR can optionally submit to PC
+  const newStatus = cycle.status === 'hr_final_review' ? 'approved' : 'hr_final_review';
+  
   dbRun(`
     UPDATE equity_review_cycles 
-    SET status = 'approved', updated_at = datetime('now')
+    SET status = ?, updated_at = datetime('now')
     WHERE id = ?
-  `, [id]);
+  `, [newStatus, id]);
   
-  res.json({ success: true, message: 'Review cycle approved' });
+  const message = newStatus === 'approved' 
+    ? 'Review cycle approved' 
+    : 'Review cycle moved to HR final review';
+  res.json({ success: true, message });
 });
 
 // Mark cycle as implemented
@@ -1034,6 +1068,33 @@ reviewCyclesRouter.delete('/:id', requireEditor, (req: Request, res: Response) =
 // PC (President's Cabinet) Approval Workflow
 // ============================================
 
+// Generate & download PC report as PDF
+reviewCyclesRouter.get('/:id/pc-report', requireEditor, async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const cycle = dbGet<{ id: number; name: string; fiscal_year: string }>(
+    'SELECT id, name, fiscal_year FROM equity_review_cycles WHERE id = ?', [id],
+  );
+  if (!cycle) {
+    throw new NotFoundError('Review cycle not found');
+  }
+
+  try {
+    const pdfBuffer = await generatePcReport(cycle.id);
+
+    const safeName = cycle.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const filename = `Equity_Plan_${safeName}_FY${cycle.fiscal_year}.pdf`;
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', pdfBuffer.length);
+    res.end(pdfBuffer);
+  } catch (err: any) {
+    console.error('PC report generation failed:', err);
+    res.status(500).json({ error: 'Report generation failed', details: err.message });
+  }
+});
+
 // Submit equity plan to President's Cabinet for vote
 reviewCyclesRouter.post('/:id/submit-to-pc', requireEditor, (req: Request, res: Response) => {
   const authReq = req as AuthenticatedRequest;
@@ -1046,7 +1107,7 @@ reviewCyclesRouter.post('/:id/submit-to-pc', requireEditor, (req: Request, res: 
   }
   
   // Check cycle is in a valid state for PC submission
-  if (!['hr_final_review', 'pc_rejected'].includes(cycle.status)) {
+  if (!['hr_final_review', 'vp_review_in_progress', 'pc_rejected'].includes(cycle.status)) {
     throw new BadRequestError(`Cannot submit to PC from '${cycle.status}' status`);
   }
   

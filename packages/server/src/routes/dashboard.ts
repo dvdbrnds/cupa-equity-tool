@@ -131,6 +131,75 @@ dashboardRouter.get('/flagged-positions', (req: Request, res: Response) => {
   })));
 });
 
+dashboardRouter.get('/data-health', (_req: Request, res: Response) => {
+  // CUPA Catalog
+  const cupaCatalog = dbGet<{ count: number; year: string | null }>(`
+    SELECT COUNT(*) as count, MAX(catalog_year) as year FROM cupa_positions
+  `);
+
+  // Positions
+  const positions = dbGet<{ count: number }>(`
+    SELECT COUNT(*) as count FROM position_mappings
+  `);
+
+  // Compensation
+  const compensation = dbGet<{ matched: number; unmatched: number }>(`
+    SELECT 
+      SUM(CASE WHEN current_salary IS NOT NULL AND current_salary > 0 THEN 1 ELSE 0 END) as matched,
+      SUM(CASE WHEN current_salary IS NULL OR current_salary = 0 THEN 1 ELSE 0 END) as unmatched
+    FROM position_mappings
+  `);
+
+  // CUPA Salary Data
+  const cupaSalary = dbGet<{ count: number; year: string | null }>(`
+    SELECT COUNT(*) as count, MAX(data_year) as year FROM cupa_salary_data
+  `);
+
+  // Equity Analysis
+  const equityAnalysis = dbGet<{ count: number; lastCalc: string | null }>(`
+    SELECT COUNT(*) as count, MAX(calculated_at) as lastCalc FROM equity_analysis
+  `);
+
+  // Active Review Cycle
+  const activeCycle = dbGet<{ name: string | null; status: string | null }>(`
+    SELECT name, status FROM equity_review_cycles 
+    WHERE status NOT IN ('archived', 'implemented') 
+    ORDER BY created_at DESC LIMIT 1
+  `);
+
+  res.json({
+    cupaCatalog: {
+      imported: (cupaCatalog?.count || 0) > 0,
+      count: cupaCatalog?.count || 0,
+      year: cupaCatalog?.year || null,
+    },
+    positions: {
+      imported: (positions?.count || 0) > 0,
+      count: positions?.count || 0,
+    },
+    compensation: {
+      imported: (compensation?.matched || 0) > 0,
+      matchedCount: compensation?.matched || 0,
+      unmatchedCount: compensation?.unmatched || 0,
+    },
+    cupaSalary: {
+      imported: (cupaSalary?.count || 0) > 0,
+      count: cupaSalary?.count || 0,
+      year: cupaSalary?.year || null,
+    },
+    equityAnalysis: {
+      calculated: (equityAnalysis?.count || 0) > 0,
+      analyzedCount: equityAnalysis?.count || 0,
+      lastCalculated: equityAnalysis?.lastCalc || null,
+    },
+    activeCycle: {
+      exists: !!activeCycle?.name,
+      name: activeCycle?.name || null,
+      status: activeCycle?.status || null,
+    },
+  });
+});
+
 dashboardRouter.get('/status-summary', (req: Request, res: Response) => {
   const authReq = req as AuthenticatedRequest;
   const auditCycleId = req.query.auditCycleId as string | undefined;

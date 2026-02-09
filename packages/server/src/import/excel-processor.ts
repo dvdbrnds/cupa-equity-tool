@@ -223,7 +223,6 @@ export async function importPositions(buffer: Buffer, userId: number, sheetNames
   const errors: ImportValidationError[] = [];
   let totalImported = 0;
   let totalSkipped = 0;
-
   for (const sheetName of sheetsToProcess) {
     if (!workbook.SheetNames.includes(sheetName)) {
       errors.push({ row: 0, field: 'sheet', message: `Sheet "${sheetName}" not found` });
@@ -273,13 +272,6 @@ export async function importPositions(buffer: Buffer, userId: number, sheetNames
       const finalEmployeeId = employeeId || `GEN-${sheetName}-${i}`;
 
       try {
-        if (cupaCode) {
-          const cupaExists = dbGet<{ cupa_code: string }>('SELECT cupa_code FROM cupa_positions WHERE cupa_code = ?', [cupaCode]);
-          if (!cupaExists) {
-            errors.push({ row: rowNum, field: 'cupa_code', message: `CUPA code ${cupaCode} not found in catalog (sheet: ${sheetName})` });
-          }
-        }
-
         // Check if exists with same employee_id (using UPSERT pattern)
         const existing = dbGet<{ id: number }>(
           'SELECT id FROM position_mappings WHERE employee_id = ?',
@@ -302,7 +294,13 @@ export async function importPositions(buffer: Buffer, userId: number, sheetNames
   }
 
   saveDatabase();
-  return { success: errors.length === 0, imported: totalImported, skipped: totalSkipped, errors: errors.slice(0, 100) };
+  return {
+    success: errors.length === 0,
+    imported: totalImported,
+    skipped: totalSkipped,
+    errors: errors.slice(0, 100),
+    warnings: [],
+  };
 }
 
 // Column mappings for compensation data import
@@ -461,11 +459,52 @@ export async function importCompensationData(buffer: Buffer, sheetName?: string)
 // Column mappings for CUPA salary data import
 const CUPA_SALARY_COLUMN_MAPPINGS = {
   cupaCode: ['CUPA #', 'CUPA Code', 'Position Number', 'Code', 'CUPA', 'Code/Title'],
-  medianSalary: ['Median', 'Median Salary', '50th Percentile', 'P50', 'Median Pay', 'Moravian', 'Budget'],
+  medianSalary: ['Median', 'Median Salary', '50th Percentile', 'P50', 'Median Pay'],
   percentile25: ['25th Percentile', 'P25', '25th', 'Q1'],
   percentile75: ['75th Percentile', 'P75', '75th', 'Q3'],
   sampleCount: ['N', 'Count', 'Sample', 'Sample Size', 'Institutions'],
 };
+
+/**
+ * Detect comparison groups in a multi-group CUPA comparison spreadsheet.
+ * Format: Code/Title | Group1 | Group1% | Group2 | Group2% | ...
+ * Row 2 typically contains sub-headers like "Median" under each group.
+ * Returns array of { name, columnIndex } for each detected group.
+ */
+export function detectComparisonGroups(buffer: Buffer, sheetName?: string): Array<{ name: string; columnIndex: number }> {
+  const workbook = XLSX.read(buffer, { type: 'buffer' });
+  const targetSheet = sheetName || workbook.SheetNames[0];
+  if (!workbook.SheetNames.includes(targetSheet)) return [];
+
+  const sheet = workbook.Sheets[targetSheet];
+  const data = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as unknown[][];
+  if (data.length < 2) return [];
+
+  const headers = data[0] as string[];
+  const row2 = data[1] as string[];
+
+  // Detect multi-group format: row 2 has repeating "Median" sub-headers
+  const medianIndices: number[] = [];
+  for (let i = 0; i < row2.length; i++) {
+    const val = String(row2[i] || '').toLowerCase().trim();
+    if (val === 'median') {
+      medianIndices.push(i);
+    }
+  }
+
+  if (medianIndices.length <= 1) return []; // Not a multi-group format
+
+  // Each "Median" sub-header corresponds to the group named in the header row at that column
+  const groups: Array<{ name: string; columnIndex: number }> = [];
+  for (const idx of medianIndices) {
+    const groupName = String(headers[idx] || '').trim();
+    if (groupName) {
+      groups.push({ name: groupName, columnIndex: idx });
+    }
+  }
+
+  return groups;
+}
 
 export async function importCupaSalaryData(buffer: Buffer, dataYear: string, sheetName?: string): Promise<ImportResult> {
   const workbook = XLSX.read(buffer, { type: 'buffer' });
@@ -484,80 +523,110 @@ export async function importCupaSalaryData(buffer: Buffer, dataYear: string, she
 
   const headers = data[0] as string[];
   const colCupaCode = findColumn(headers, CUPA_SALARY_COLUMN_MAPPINGS.cupaCode);
-  const colMedian = findColumn(headers, CUPA_SALARY_COLUMN_MAPPINGS.medianSalary);
-  const colP25 = findColumn(headers, CUPA_SALARY_COLUMN_MAPPINGS.percentile25);
-  const colP75 = findColumn(headers, CUPA_SALARY_COLUMN_MAPPINGS.percentile75);
-  const colSampleCount = findColumn(headers, CUPA_SALARY_COLUMN_MAPPINGS.sampleCount);
 
   if (colCupaCode === -1) {
     return { success: false, imported: 0, skipped: 0, errors: [{ row: 1, field: 'CUPA Code', message: `CUPA Code column not found. Available headers: ${headers.join(', ')}` }] };
   }
 
-  if (colMedian === -1) {
-    return { success: false, imported: 0, skipped: 0, errors: [{ row: 1, field: 'Median Salary', message: `Median Salary column not found. Available headers: ${headers.join(', ')}` }] };
-  }
-
-  // Detect if row 2 is a sub-header row (contains "Median" labels) - skip it if so
-  let startRow = 1;
-  if (data.length > 1) {
-    const row2 = data[1];
-    const row2Str = row2.map(c => String(c || '').toLowerCase()).join(' ');
-    if (row2Str.includes('median')) {
-      startRow = 2; // Skip the sub-header row
-    }
-  }
-
+  // Detect multi-group format
+  const groups = detectComparisonGroups(buffer, targetSheet);
   const errors: ImportValidationError[] = [];
   let imported = 0;
   let skipped = 0;
 
-  for (let i = startRow; i < data.length; i++) {
-    const row = data[i];
-    const rowNum = i + 1;
+  if (groups.length > 0) {
+    // Multi-group comparison format: import ALL groups at once
+    const startRow = 2; // Row 2 is the sub-header row ("Median", "Median", ...)
 
-    // Handle Code/Title format like "[101000] Chief Executive Officer..."
-    let codeValue = row[colCupaCode];
-    if (typeof codeValue === 'string' && codeValue.startsWith('[')) {
-      const match = codeValue.match(/^\[(\d+)\]/);
-      if (match) {
-        codeValue = match[1];
+    // Clear existing data for this year (re-import)
+    dbRun('DELETE FROM cupa_salary_data WHERE data_year = ?', [dataYear]);
+
+    for (let i = startRow; i < data.length; i++) {
+      const row = data[i];
+      const rowNum = i + 1;
+
+      let codeValue = row[colCupaCode];
+      if (typeof codeValue === 'string' && codeValue.startsWith('[')) {
+        const match = codeValue.match(/^\[(\d+)\]/);
+        if (match) codeValue = match[1];
       }
+
+      const cupaCode = normalizeCupaCode(codeValue);
+      if (!cupaCode) { skipped++; continue; }
+
+      let rowHasData = false;
+
+      // Insert one row per comparison group that has data for this CUPA code
+      for (const group of groups) {
+        const medianSalary = parseNumber(row[group.columnIndex]);
+        if (medianSalary === null || medianSalary <= 0) continue;
+
+        try {
+          dbRun(`
+            INSERT OR REPLACE INTO cupa_salary_data (cupa_code, data_year, comparison_group, median_salary, percentile_25, percentile_75, sample_count)
+            VALUES (?, ?, ?, ?, NULL, NULL, NULL)
+          `, [cupaCode, dataYear, group.name, medianSalary]);
+          imported++;
+          rowHasData = true;
+        } catch (err) {
+          errors.push({ row: rowNum, field: 'database', message: `${group.name}: ${String(err)}` });
+        }
+      }
+
+      if (!rowHasData) skipped++;
+    }
+  } else {
+    // Standard single-median format
+    const colMedian = findColumn(headers, CUPA_SALARY_COLUMN_MAPPINGS.medianSalary);
+    if (colMedian === -1) {
+      return { success: false, imported: 0, skipped: 0, errors: [{ row: 1, field: 'Median Salary', message: `Median Salary column not found. Available headers: ${headers.join(', ')}` }] };
     }
 
-    const cupaCode = normalizeCupaCode(codeValue);
-    if (!cupaCode) { skipped++; continue; }
-
-    const medianSalary = parseNumber(row[colMedian]);
-    if (medianSalary === null || medianSalary <= 0) {
-      // Skip rows without salary data (category headers)
-      skipped++;
-      continue;
+    let startRow = 1;
+    if (data.length > 1) {
+      const row2 = data[1];
+      const row2Str = row2.map(c => String(c || '').toLowerCase()).join(' ');
+      if (row2Str.includes('median')) startRow = 2;
     }
 
-    const percentile25 = colP25 !== -1 ? parseNumber(row[colP25]) : null;
-    const percentile75 = colP75 !== -1 ? parseNumber(row[colP75]) : null;
-    const sampleCount = colSampleCount !== -1 ? parseNumber(row[colSampleCount]) : null;
+    const colP25 = findColumn(headers, CUPA_SALARY_COLUMN_MAPPINGS.percentile25);
+    const colP75 = findColumn(headers, CUPA_SALARY_COLUMN_MAPPINGS.percentile75);
+    const colSampleCount = findColumn(headers, CUPA_SALARY_COLUMN_MAPPINGS.sampleCount);
 
-    try {
-      // Upsert: update if exists, insert if not
-      const existing = dbGet<{ id: number }>('SELECT id FROM cupa_salary_data WHERE cupa_code = ? AND data_year = ?', [cupaCode, dataYear]);
-      
-      if (existing) {
-        dbRun(`
-          UPDATE cupa_salary_data SET 
-            median_salary = ?, percentile_25 = ?, percentile_75 = ?, sample_count = ?
-          WHERE id = ?
-        `, [medianSalary, percentile25, percentile75, sampleCount, existing.id]);
-      } else {
-        dbRun(`
-          INSERT INTO cupa_salary_data (cupa_code, data_year, median_salary, percentile_25, percentile_75, sample_count)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `, [cupaCode, dataYear, medianSalary, percentile25, percentile75, sampleCount]);
+    for (let i = startRow; i < data.length; i++) {
+      const row = data[i];
+      const rowNum = i + 1;
+
+      let codeValue = row[colCupaCode];
+      if (typeof codeValue === 'string' && codeValue.startsWith('[')) {
+        const match = codeValue.match(/^\[(\d+)\]/);
+        if (match) codeValue = match[1];
       }
-      imported++;
-    } catch (err) {
-      errors.push({ row: rowNum, field: 'database', message: String(err) });
-      skipped++;
+
+      const cupaCode = normalizeCupaCode(codeValue);
+      if (!cupaCode) { skipped++; continue; }
+
+      const medianSalary = parseNumber(row[colMedian]);
+      if (medianSalary === null || medianSalary <= 0) { skipped++; continue; }
+
+      const percentile25 = colP25 !== -1 ? parseNumber(row[colP25]) : null;
+      const percentile75 = colP75 !== -1 ? parseNumber(row[colP75]) : null;
+      const sampleCount = colSampleCount !== -1 ? parseNumber(row[colSampleCount]) : null;
+
+      try {
+        const existing = dbGet<{ id: number }>('SELECT id FROM cupa_salary_data WHERE cupa_code = ? AND data_year = ? AND comparison_group = ?', [cupaCode, dataYear, 'default']);
+        if (existing) {
+          dbRun(`UPDATE cupa_salary_data SET median_salary = ?, percentile_25 = ?, percentile_75 = ?, sample_count = ? WHERE id = ?`,
+            [medianSalary, percentile25, percentile75, sampleCount, existing.id]);
+        } else {
+          dbRun(`INSERT INTO cupa_salary_data (cupa_code, data_year, comparison_group, median_salary, percentile_25, percentile_75, sample_count) VALUES (?, ?, 'default', ?, ?, ?, ?)`,
+            [cupaCode, dataYear, medianSalary, percentile25, percentile75, sampleCount]);
+        }
+        imported++;
+      } catch (err) {
+        errors.push({ row: rowNum, field: 'database', message: String(err) });
+        skipped++;
+      }
     }
   }
 

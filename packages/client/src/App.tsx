@@ -3,13 +3,15 @@ import { useAuth } from './context/AuthContext';
 import { MainLayout } from './components/layout/MainLayout';
 import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
+import { VPReviewPage } from './pages/VPReviewPage';
+import { DivisionDetailPage } from './pages/DivisionDetailPage';
 import { PositionsPage } from './pages/PositionsPage';
 import { PositionDetailPage } from './pages/PositionDetailPage';
 import { ReviewHistoryPage } from './pages/ReviewHistoryPage';
 import { ReviewCyclesPage } from './pages/ReviewCyclesPage';
 import { ReviewCycleDetailPage } from './pages/ReviewCycleDetailPage';
 import { UsersPage } from './pages/UsersPage';
-import { ImportPage } from './pages/ImportPage';
+// ImportPage removed -- uploads are now inline in the SetupChecklist on the Dashboard
 import { CupaCatalogPage } from './pages/CupaCatalogPage';
 import { VpRolesPage } from './pages/VpRolesPage';
 import { LoadingSpinner } from './components/ui/loading-spinner';
@@ -76,8 +78,14 @@ export default function App() {
           </ProtectedRoute>
         }
       >
-        {/* Dashboard - Equity Analysis Home */}
+        {/* Dashboard - role-aware landing page */}
         <Route index element={<DashboardPage />} />
+        
+        {/* VP Review - purpose-built review task interface */}
+        <Route path="review" element={<VPReviewPage />} />
+        
+        {/* Division Detail - drill-down view for a single VP division */}
+        <Route path="divisions/:vp" element={<DivisionDetailPage />} />
         
         {/* Position Management */}
         <Route path="positions" element={<PositionsPage />} />
@@ -93,8 +101,8 @@ export default function App() {
         <Route path="review-cycles" element={<EditorRoute><ReviewCyclesPage /></EditorRoute>} />
         <Route path="review-cycles/:id" element={<EditorRoute><ReviewCycleDetailPage /></EditorRoute>} />
         
-        {/* Import (HR only) */}
-        <Route path="import" element={<EditorRoute><ImportPage /></EditorRoute>} />
+        {/* Import -- redirects to dashboard (uploads are now inline) */}
+        <Route path="import" element={<Navigate to="/" replace />} />
         
         {/* User Management (Admin only) */}
         <Route path="users" element={<AdminRoute><UsersPage /></AdminRoute>} />
