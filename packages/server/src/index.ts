@@ -3,8 +3,6 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import https from 'https';
-import fs from 'fs';
 
 import { errorHandler } from './middleware/error-handler.js';
 import { authRouter } from './routes/auth.js';
@@ -25,7 +23,6 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
-const HTTPS_PORT = process.env.HTTPS_PORT || 3443;
 
 // Trust proxy (needed when behind Coolify/Traefik for secure cookies)
 app.set('trust proxy', 1);
@@ -73,27 +70,11 @@ async function main() {
   // Error handling
   app.use(errorHandler);
 
-  // Start HTTP server
+  // Start HTTP server — Traefik handles SSL termination
   app.listen(Number(PORT), '0.0.0.0', () => {
-    console.log(`HTTP server running on http://0.0.0.0:${PORT}`);
+    console.log(`Server running on http://0.0.0.0:${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   });
-
-  // Start HTTPS server with self-signed cert (if certs exist)
-  const sslKeyPath = process.env.SSL_KEY_PATH || '/app/certs/server.key';
-  const sslCertPath = process.env.SSL_CERT_PATH || '/app/certs/server.crt';
-
-  if (fs.existsSync(sslKeyPath) && fs.existsSync(sslCertPath)) {
-    const sslOptions = {
-      key: fs.readFileSync(sslKeyPath),
-      cert: fs.readFileSync(sslCertPath),
-    };
-    https.createServer(sslOptions, app).listen(Number(HTTPS_PORT), '0.0.0.0', () => {
-      console.log(`HTTPS server running on https://0.0.0.0:${HTTPS_PORT}`);
-    });
-  } else {
-    console.log('SSL certs not found, skipping HTTPS server (dev mode)');
-  }
 
   // Graceful shutdown
   process.on('SIGINT', () => {
