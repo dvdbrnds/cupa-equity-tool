@@ -341,6 +341,14 @@ export function PositionDetailPage() {
                     <span className="text-muted-foreground">Type: </span>
                     <Badge variant="secondary">{equityData.compensationType}</Badge>
                   </div>
+                  {equityData.compensationType === 'hourly' && equityData.hourlyRate && (
+                    <div>
+                      <span className="text-muted-foreground">Hourly Rate: </span>
+                      <span className="font-medium font-mono">
+                        ${equityData.hourlyRate.toFixed(2)}/hr
+                      </span>
+                    </div>
+                  )}
                   <div>
                     <span className="text-muted-foreground">FTE: </span>
                     <span className="font-medium">
@@ -351,6 +359,27 @@ export function PositionDetailPage() {
                     <span className="text-muted-foreground">Months: </span>
                     <span className="font-medium">{equityData.appointmentMonths}</span>
                   </div>
+                  {equityData.yearsInRole !== null && (
+                    <div>
+                      <span className="text-muted-foreground">Years in Role: </span>
+                      <span className="font-medium">
+                        {equityData.yearsInRole.toFixed(1)}
+                        {equityData.roleStartDate ? ' (role date)' : equityData.hireDate ? ' (hire date)' : ''}
+                      </span>
+                    </div>
+                  )}
+                  {equityData.hireDate && (
+                    <div>
+                      <span className="text-muted-foreground">Hire Date: </span>
+                      <span className="font-medium">{equityData.hireDate}</span>
+                    </div>
+                  )}
+                  {equityData.roleStartDate && (
+                    <div>
+                      <span className="text-muted-foreground">Role Start: </span>
+                      <span className="font-medium">{equityData.roleStartDate}</span>
+                    </div>
+                  )}
                   {equityData.hasHousingBenefit && (
                     <div>
                       <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">

@@ -26,8 +26,16 @@ FROM node:20-alpine AS production
 
 WORKDIR /app
 
-# Install curl for health check
-RUN apk add --no-cache curl
+# Install curl for health check and openssl for self-signed cert
+RUN apk add --no-cache curl openssl
+
+# Generate self-signed SSL certificate for cupa.moravian.edu
+RUN mkdir -p /app/certs && \
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+    -keyout /app/certs/server.key \
+    -out /app/certs/server.crt \
+    -subj "/CN=cupa.moravian.edu" \
+    -addext "subjectAltName=DNS:cupa.moravian.edu"
 
 # Install production dependencies only
 COPY package*.json ./
@@ -46,11 +54,14 @@ RUN mkdir -p /app/data
 
 ENV NODE_ENV=production
 ENV PORT=3001
+ENV HTTPS_PORT=3443
 ENV DATA_DIR=/app/data
+ENV SSL_KEY_PATH=/app/certs/server.key
+ENV SSL_CERT_PATH=/app/certs/server.crt
 
-EXPOSE 3001
+EXPOSE 3001 3443
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-  CMD curl -f http://localhost:3001/api/health || exit 1
+  CMD curl -fk https://127.0.0.1:3443/api/health || exit 1
 
 CMD ["node", "packages/server/dist/index.js"]

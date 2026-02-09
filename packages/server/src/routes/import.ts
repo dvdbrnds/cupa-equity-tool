@@ -103,9 +103,9 @@ importRouter.post('/generate-fake-compensation', async (_req: Request, res: Resp
     let baseSalary: number;
     
     if (isHourly) {
-      // Hourly rate: $14-$28/hr => annualized as hourly * 2080
+      // Hourly rate: $14-$28/hr => annualized as hourly * 1950 (37.5 hr/wk × 52)
       const hourlyRate = 14 + Math.random() * 14;
-      baseSalary = hourlyRate * 2080;
+      baseSalary = hourlyRate * 1950;
     } else {
       // Generate realistic salary based on CUPA median if available
       baseSalary = 45000 + Math.random() * 60000; // $45k-$105k default
@@ -146,6 +146,12 @@ importRouter.post('/generate-fake-compensation', async (_req: Request, res: Resp
     
     const salary = Math.round(baseSalary / 100) * 100; // Round to nearest $100
     
+    // Store hourly rate for hourly employees
+    let hourlyRate: number | null = null;
+    if (isHourly) {
+      hourlyRate = Math.round((salary / 1950) * 100) / 100; // Derive from annualized salary (37.5hr/wk)
+    }
+    
     // Random hire date: weighted toward longer tenures (2015-2025)
     const yearRoll = Math.random();
     let year: number;
@@ -157,6 +163,15 @@ importRouter.post('/generate-fake-compensation', async (_req: Request, res: Resp
     const month = Math.floor(Math.random() * 12) + 1;
     const day = Math.floor(Math.random() * 28) + 1;
     const hireDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    
+    // Role start date: for ~40% of employees, they entered their current role later than hire
+    let roleStartDate: string | null = null;
+    if (Math.random() < 0.40 && year < 2024) {
+      const roleYear = year + 1 + Math.floor(Math.random() * (2025 - year - 1));
+      const roleMonth = Math.floor(Math.random() * 12) + 1;
+      const roleDay = Math.floor(Math.random() * 28) + 1;
+      roleStartDate = `${roleYear}-${String(roleMonth).padStart(2, '0')}-${String(roleDay).padStart(2, '0')}`;
+    }
     
     // FTE: most full-time, ~12% part-time, hourly workers more likely part-time
     let fte: number;
@@ -177,14 +192,16 @@ importRouter.post('/generate-fake-compensation', async (_req: Request, res: Resp
     dbRun(`
       UPDATE position_mappings SET 
         current_salary = ?,
+        hourly_rate = ?,
         hire_date = ?,
+        role_start_date = ?,
         fte = ?,
         appointment_months = ?,
         compensation_type = ?,
         has_housing_benefit = ?,
         housing_value = ?
       WHERE id = ?
-    `, [salary, hireDate, fte, appointmentMonths, compensationType, hasHousing ? 1 : 0, housingValue, pos.id]);
+    `, [salary, hourlyRate, hireDate, roleStartDate, fte, appointmentMonths, compensationType, hasHousing ? 1 : 0, housingValue, pos.id]);
     
     updated++;
     if (isHourly) hourlyCount++;

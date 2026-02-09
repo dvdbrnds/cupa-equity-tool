@@ -306,8 +306,10 @@ export async function importPositions(buffer: Buffer, userId: number, sheetNames
 // Column mappings for compensation data import
 const COMPENSATION_COLUMN_MAPPINGS = {
   employeeId: ['Employee ID', 'EmployeeID', 'Employee_ID', 'EE ID', 'ID', 'Emp ID'],
-  currentSalary: ['Salary', 'Annual Salary', 'Current Salary', 'Base Salary', 'Annual Pay', 'Base Pay'],
-  hireDate: ['Hire Date', 'Start Date', 'Role Start Date', 'Date in Role', 'Position Start Date', 'Job Start Date'],
+  currentSalary: ['Salary', 'Annual Salary', 'Current Salary', 'Base Salary', 'Annual Pay', 'Base Pay', 'Annualized Salary'],
+  hourlyRate: ['Hourly Rate', 'Hourly Pay', 'Hour Rate', 'Rate/Hour', 'Rate Per Hour', 'Pay Rate'],
+  hireDate: ['Hire Date', 'Original Hire Date', 'Start Date', 'Date of Hire', 'Institution Start Date'],
+  roleStartDate: ['Role Start Date', 'Date in Role', 'Position Start Date', 'Job Start Date', 'Current Position Date', 'Date in Current Position', 'Role Date'],
   fte: ['FTE', 'Full Time Equivalent', 'Work %', 'Work Percent', 'Percent Time'],
   appointmentMonths: ['Appt Months', 'Appointment', 'Contract Months', 'Months', 'Appointment Months', '10/12'],
   compensationType: ['Comp Type', 'FLSA', 'Salaried/Hourly', 'Pay Type', 'Compensation Type', 'Exempt Status'],
@@ -386,7 +388,9 @@ export async function importCompensationData(buffer: Buffer, sheetName?: string)
   const headers = data[0] as string[];
   const colEmployeeId = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.employeeId);
   const colSalary = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.currentSalary);
+  const colHourlyRate = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.hourlyRate);
   const colHireDate = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.hireDate);
+  const colRoleStartDate = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.roleStartDate);
   const colFte = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.fte);
   const colAppointmentMonths = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.appointmentMonths);
   const colCompType = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.compensationType);
@@ -398,6 +402,7 @@ export async function importCompensationData(buffer: Buffer, sheetName?: string)
   }
 
   const errors: ImportValidationError[] = [];
+  const warnings: ImportValidationError[] = [];
   let updated = 0;
   let skipped = 0;
 
@@ -417,18 +422,31 @@ export async function importCompensationData(buffer: Buffer, sheetName?: string)
     }
 
     const currentSalary = colSalary !== -1 ? parseNumber(row[colSalary]) : null;
+    const hourlyRate = colHourlyRate !== -1 ? parseNumber(row[colHourlyRate]) : null;
     const hireDate = colHireDate !== -1 ? parseDate(row[colHireDate]) : null;
+    const roleStartDate = colRoleStartDate !== -1 ? parseDate(row[colRoleStartDate]) : null;
     const fte = colFte !== -1 ? parseNumber(row[colFte]) : 1.0;
     const appointmentMonths = colAppointmentMonths !== -1 ? parseNumber(row[colAppointmentMonths]) : 12;
     const compensationType = colCompType !== -1 ? parseCompensationType(row[colCompType]) : 'salaried';
     const hasHousing = colHasHousing !== -1 ? parseBoolean(row[colHasHousing]) : false;
     const housingValue = colHousingValue !== -1 ? parseNumber(row[colHousingValue]) : 15000;
 
+    // For hourly employees, auto-annualize if hourly_rate is provided but current_salary is not
+    // Default: 37.5 hrs/week × 52 weeks = 1,950 annual hours (Moravian standard)
+    let effectiveSalary = currentSalary;
+    if (compensationType === 'hourly' && hourlyRate && hourlyRate > 0 && !effectiveSalary) {
+      const annualHours = 1950; // Matches DEFAULT_EQUITY_CONFIG.hourlyAnnualHours
+      effectiveSalary = Math.round(hourlyRate * annualHours * 100) / 100;
+      warnings.push({ row: rowNum, field: 'salary', message: `Auto-annualized hourly rate $${hourlyRate}/hr × ${annualHours}hrs = $${effectiveSalary.toLocaleString()}` });
+    }
+
     try {
       dbRun(`
         UPDATE position_mappings SET 
           current_salary = ?,
+          hourly_rate = ?,
           hire_date = ?,
+          role_start_date = ?,
           fte = ?,
           appointment_months = ?,
           compensation_type = ?,
@@ -436,8 +454,10 @@ export async function importCompensationData(buffer: Buffer, sheetName?: string)
           housing_value = ?
         WHERE id = ?
       `, [
-        currentSalary,
+        effectiveSalary,
+        hourlyRate,
         hireDate,
+        roleStartDate,
         fte ?? 1.0,
         appointmentMonths ?? 12,
         compensationType,
@@ -453,7 +473,7 @@ export async function importCompensationData(buffer: Buffer, sheetName?: string)
   }
 
   saveDatabase();
-  return { success: errors.length === 0, imported: updated, skipped, errors: errors.slice(0, 100) };
+  return { success: errors.length === 0, imported: updated, skipped, errors: errors.slice(0, 100), warnings: warnings.slice(0, 100) };
 }
 
 // Column mappings for CUPA salary data import

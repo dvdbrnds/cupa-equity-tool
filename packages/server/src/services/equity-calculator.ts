@@ -11,11 +11,26 @@ interface PositionForAnalysis {
   department: string;
   current_salary: number | null;
   hire_date: string | null;
+  role_start_date: string | null;
+  hourly_rate: number | null;
   fte: number;
   appointment_months: number;
   compensation_type: string;
   has_housing_benefit: number;
   housing_value: number;
+}
+
+/**
+ * Configuration for equity calculation parameters.
+ * These can be overridden per calculation run via the API.
+ */
+export interface EquityCalculationConfig {
+  /** Annual expected increase rate (default: 0.0275 = 2.75%) */
+  annualIncrease: number;
+  /** Target year when employee should reach full median (default: 5) */
+  targetYear: number;
+  /** Standard annual hours for hourly-to-annual conversion (default: 1950 for 37.5-hr week) */
+  hourlyAnnualHours: number;
 }
 
 interface CupaSalary {
@@ -37,16 +52,19 @@ interface EquityCalculationResult {
 }
 
 /**
- * Calculate years in role from hire date
+ * Calculate years in current role.
+ * Prefers role_start_date (date entered current position) over hire_date (original hire).
+ * Falls back to hire_date if role_start_date is not available.
  */
-function calculateYearsInRole(hireDate: string | null): number | null {
-  if (!hireDate) return null;
+function calculateYearsInRole(roleStartDate: string | null, hireDate: string | null): number | null {
+  const dateStr = roleStartDate || hireDate;
+  if (!dateStr) return null;
   
-  const hire = new Date(hireDate);
-  if (isNaN(hire.getTime())) return null;
+  const startDate = new Date(dateStr);
+  if (isNaN(startDate.getTime())) return null;
   
   const now = new Date();
-  const diffMs = now.getTime() - hire.getTime();
+  const diffMs = now.getTime() - startDate.getTime();
   const years = diffMs / (1000 * 60 * 60 * 24 * 365.25);
   
   return Math.max(0, Math.round(years * 100) / 100); // Round to 2 decimals
@@ -99,12 +117,45 @@ function calculateAdjustedMedian(
 }
 
 /**
+ * Annualize an hourly employee's compensation.
+ * If the employee has an explicit hourly_rate, use that × annual hours × FTE.
+ * Otherwise, treat current_salary as already annualized.
+ */
+function annualizeHourlyCompensation(
+  position: PositionForAnalysis,
+  annualHours: number
+): { annualizedSalary: number; note: string } | null {
+  if (position.compensation_type !== 'hourly') return null;
+  
+  if (position.hourly_rate && position.hourly_rate > 0) {
+    // Hourly rate × annual hours (FTE is applied to the median, not here —
+    // we want an apples-to-apples comparison at the full-time equivalent)
+    const annualized = position.hourly_rate * annualHours;
+    return {
+      annualizedSalary: Math.round(annualized * 100) / 100,
+      note: `Hourly $${position.hourly_rate.toFixed(2)}/hr × ${annualHours}hrs = $${Math.round(annualized).toLocaleString()} annualized`,
+    };
+  }
+  
+  // If no hourly_rate but current_salary exists, assume it's already annualized
+  if (position.current_salary && position.current_salary > 0) {
+    return {
+      annualizedSalary: position.current_salary,
+      note: 'Hourly (salary already annualized)',
+    };
+  }
+  
+  return null;
+}
+
+/**
  * Calculate equity for a single position
  */
 function calculatePositionEquity(
   position: PositionForAnalysis,
   cupaSalary: CupaSalary | null,
-  dataYear: string
+  dataYear: string,
+  config: EquityCalculationConfig
 ): EquityCalculationResult {
   const result: EquityCalculationResult = {
     positionId: position.id,
@@ -133,8 +184,8 @@ function calculatePositionEquity(
     return result;
   }
   
-  // If no current salary
-  if (position.current_salary === null) {
+  // If no current salary (and no hourly rate to convert)
+  if (position.current_salary === null && !(position.compensation_type === 'hourly' && position.hourly_rate)) {
     result.error = 'No salary data for employee';
     result.adjustmentNotes = 'Missing employee salary';
     return result;
@@ -142,21 +193,35 @@ function calculatePositionEquity(
   
   result.baseMedian = cupaSalary.median_salary;
   
-  // Calculate years in role
-  result.yearsInRole = calculateYearsInRole(position.hire_date);
+  // Calculate years in role — prefer role_start_date over hire_date
+  result.yearsInRole = calculateYearsInRole(position.role_start_date, position.hire_date);
+  if (position.role_start_date) {
+    notes.push('YOS based on role start date');
+  }
   
-  // Calculate adjusted median
+  // Calculate adjusted median using configurable YOS parameters
   const { adjustedMedian, notes: adjustmentNotes } = calculateAdjustedMedian(
     cupaSalary.median_salary,
     position.appointment_months || 12,
     position.fte || 1.0,
-    result.yearsInRole
+    result.yearsInRole,
+    config.annualIncrease,
+    config.targetYear
   );
   result.adjustedMedian = adjustedMedian;
   notes.push(...adjustmentNotes);
   
-  // Calculate total compensation (salary + housing if applicable)
-  result.totalCompensation = position.current_salary;
+  // Calculate total compensation
+  // For hourly employees: annualize their compensation for comparison against CUPA medians
+  const hourlyResult = annualizeHourlyCompensation(position, config.hourlyAnnualHours);
+  if (hourlyResult) {
+    result.totalCompensation = hourlyResult.annualizedSalary;
+    notes.push(hourlyResult.note);
+  } else {
+    result.totalCompensation = position.current_salary!;
+  }
+  
+  // Add housing benefit to total compensation
   if (position.has_housing_benefit) {
     result.totalCompensation += position.housing_value || 15000;
     notes.push(`+$${(position.housing_value || 15000).toLocaleString()} housing`);
@@ -175,20 +240,34 @@ function calculatePositionEquity(
   return result;
 }
 
+/** Default configuration — Moravian uses a 37.5-hour work week (37.5 × 52 = 1,950) */
+export const DEFAULT_EQUITY_CONFIG: EquityCalculationConfig = {
+  annualIncrease: 0.0275,
+  targetYear: 5,
+  hourlyAnnualHours: 1950,
+};
+
 /**
  * Run equity analysis for all positions (no audit cycle)
  */
-export function runEquityAnalysis(dataYear: string): {
+export function runEquityAnalysis(dataYear: string, configOverrides?: Partial<EquityCalculationConfig>): {
   success: boolean;
   analyzed: number;
   errors: number;
   message: string;
+  config: EquityCalculationConfig;
 } {
+  const config: EquityCalculationConfig = {
+    ...DEFAULT_EQUITY_CONFIG,
+    ...configOverrides,
+  };
+
   // Get all positions
   const positions = dbAll<PositionForAnalysis>(`
     SELECT 
       id, employee_id, employee_name, institutional_title, cupa_code,
       vp_stem, division, department, current_salary, hire_date,
+      role_start_date, hourly_rate,
       COALESCE(fte, 1.0) as fte,
       COALESCE(appointment_months, 12) as appointment_months,
       COALESCE(compensation_type, 'salaried') as compensation_type,
@@ -198,7 +277,7 @@ export function runEquityAnalysis(dataYear: string): {
   `);
   
   if (positions.length === 0) {
-    return { success: false, analyzed: 0, errors: 0, message: 'No positions found' };
+    return { success: false, analyzed: 0, errors: 0, message: 'No positions found', config };
   }
   
   // Determine the primary comparison group for equity gap calculation.
@@ -244,7 +323,7 @@ export function runEquityAnalysis(dataYear: string): {
   
   for (const position of positions) {
     const cupaSalary = position.cupa_code ? salaryDataMap.get(position.cupa_code) || null : null;
-    const result = calculatePositionEquity(position, cupaSalary, dataYear);
+    const result = calculatePositionEquity(position, cupaSalary, dataYear, config);
     
     try {
       dbRun(`
@@ -280,7 +359,8 @@ export function runEquityAnalysis(dataYear: string): {
     success: true,
     analyzed,
     errors,
-    message: `Analyzed ${analyzed} positions with ${errors} errors/warnings`
+    message: `Analyzed ${analyzed} positions with ${errors} errors/warnings`,
+    config,
   };
 }
 

@@ -60,6 +60,9 @@ function rowToEquityAnalysis(row: Record<string, unknown>): EquityAnalysisWithPo
     division: row.division as string,
     department: row.department as string,
     currentSalary: row.current_salary as number | null,
+    hireDate: row.hire_date as string | null,
+    roleStartDate: row.role_start_date as string | null,
+    hourlyRate: row.hourly_rate as number | null,
     fte: (row.fte as number) || 1.0,
     appointmentMonths: (row.appointment_months as number) || 12,
     compensationType: (row.compensation_type as CompensationType) || 'salaried',
@@ -70,10 +73,14 @@ function rowToEquityAnalysis(row: Record<string, unknown>): EquityAnalysisWithPo
 // Run equity analysis calculation
 const calculateSchema = z.object({
   dataYear: z.string().min(1),
+  // Optional: configurable YOS and hourly parameters
+  annualIncrease: z.number().min(0).max(0.20).optional(),  // e.g., 0.0275 = 2.75%
+  targetYear: z.number().int().min(1).max(30).optional(),   // e.g., 5
+  hourlyAnnualHours: z.number().int().min(1000).max(3000).optional(), // e.g., 1950 (37.5hr/wk)
 });
 
 equityAnalysisRouter.post('/calculate', requireEditor, (req: Request, res: Response) => {
-  const { dataYear } = calculateSchema.parse(req.body);
+  const { dataYear, annualIncrease, targetYear, hourlyAnnualHours } = calculateSchema.parse(req.body);
 
   // Check if CUPA salary data exists for this year
   const salaryDataCount = dbGet<{ count: number }>('SELECT COUNT(*) as count FROM cupa_salary_data WHERE data_year = ?', [dataYear]);
@@ -81,7 +88,12 @@ equityAnalysisRouter.post('/calculate', requireEditor, (req: Request, res: Respo
     throw new BadRequestError(`No CUPA salary data found for year ${dataYear}. Please import CUPA salary data first.`);
   }
 
-  const result = runEquityAnalysis(dataYear);
+  const configOverrides: Record<string, number> = {};
+  if (annualIncrease !== undefined) configOverrides.annualIncrease = annualIncrease;
+  if (targetYear !== undefined) configOverrides.targetYear = targetYear;
+  if (hourlyAnnualHours !== undefined) configOverrides.hourlyAnnualHours = hourlyAnnualHours;
+
+  const result = runEquityAnalysis(dataYear, configOverrides);
   res.json(result);
 });
 
@@ -200,8 +212,9 @@ equityAnalysisRouter.get('/positions', (req: Request, res: Response) => {
       ea.total_compensation, ea.equity_gap, ea.gap_percentage, ea.years_in_role,
       ea.adjustment_notes, ea.calculated_at, ea.proposed_raise,
       pm.employee_id, pm.employee_name, pm.institutional_title, pm.cupa_code,
-      pm.vp_stem, pm.division, pm.department, pm.current_salary, pm.fte,
-      pm.appointment_months, pm.compensation_type, pm.has_housing_benefit,
+      pm.vp_stem, pm.division, pm.department, pm.current_salary,
+      pm.hire_date, pm.role_start_date, pm.hourly_rate,
+      pm.fte, pm.appointment_months, pm.compensation_type, pm.has_housing_benefit,
       cp.title as cupa_title
     FROM position_mappings pm
     LEFT JOIN equity_analysis ea ON pm.id = ea.position_mapping_id
@@ -302,9 +315,12 @@ equityAnalysisRouter.get('/export', requireEditor, (_req: Request, res: Response
       pm.division as "Division",
       pm.department as "Department",
       pm.current_salary as "Current Salary",
+      pm.hourly_rate as "Hourly Rate",
       pm.fte as "FTE",
       pm.appointment_months as "Appt Months",
       pm.compensation_type as "Comp Type",
+      pm.hire_date as "Hire Date",
+      pm.role_start_date as "Role Start Date",
       CASE WHEN pm.has_housing_benefit THEN 'Yes' ELSE 'No' END as "Housing Benefit",
       ea.base_median as "CUPA Median",
       ea.adjusted_median as "Adjusted Median",

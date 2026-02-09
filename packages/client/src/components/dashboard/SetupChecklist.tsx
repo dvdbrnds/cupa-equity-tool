@@ -84,6 +84,11 @@ export function SetupChecklist() {
   const [calcError, setCalcError] = useState<string | null>(null);
   const [salaryYears, setSalaryYears] = useState<Array<{ data_year: string; count: number }>>([]);
   const [selectedYear, setSelectedYear] = useState<string>('');
+  // Configurable equity parameters (defaults match Moravian's 37.5-hr week)
+  const [hoursPerWeek, setHoursPerWeek] = useState<string>('37.5');
+  const [yosAnnualIncrease, setYosAnnualIncrease] = useState<string>('2.75');
+  const [yosTargetYear, setYosTargetYear] = useState<string>('5');
+  const [showAdvancedConfig, setShowAdvancedConfig] = useState(false);
 
   // Generate fake data
   const [isGenerating, setIsGenerating] = useState(false);
@@ -287,7 +292,16 @@ export function SetupChecklist() {
     setIsCalculating(true);
     setCalcError(null);
     try {
-      const result = await equityAnalysisApi.calculate(selectedYear);
+      const hrs = parseFloat(hoursPerWeek);
+      const annualHours = !isNaN(hrs) && hrs > 0 ? Math.round(hrs * 52) : 1950;
+      const annualInc = parseFloat(yosAnnualIncrease);
+      const targetYr = parseInt(yosTargetYear);
+
+      const result = await equityAnalysisApi.calculate(selectedYear, {
+        hourlyAnnualHours: annualHours,
+        annualIncrease: !isNaN(annualInc) ? annualInc / 100 : 0.0275,
+        targetYear: !isNaN(targetYr) && targetYr > 0 ? targetYr : 5,
+      });
       if (result.success) {
         loadHealth();
         setActiveDialog(null);
@@ -706,7 +720,7 @@ export function SetupChecklist() {
       {/* Equity Analysis Dialog */}
       {activeDialog === 'equity-analysis' && (
         <Dialog open onOpenChange={() => setActiveDialog(null)}>
-          <DialogContent>
+          <DialogContent className="max-w-lg">
             <DialogHeader>
               <DialogTitle>Run Equity Analysis</DialogTitle>
               <DialogDescription>
@@ -734,6 +748,89 @@ export function SetupChecklist() {
                   </p>
                 )}
               </div>
+
+              {/* Work Hours Configuration */}
+              <div className="rounded-lg border p-3 space-y-3">
+                <div>
+                  <Label htmlFor="hoursPerWeek">Hours Per Week</Label>
+                  <div className="flex items-center gap-2 mt-1">
+                    <Input
+                      id="hoursPerWeek"
+                      type="number"
+                      step="0.5"
+                      min="1"
+                      max="60"
+                      value={hoursPerWeek}
+                      onChange={(e) => setHoursPerWeek(e.target.value)}
+                      className="w-24"
+                    />
+                    <span className="text-sm text-muted-foreground">
+                      hrs/wk = {(() => {
+                        const h = parseFloat(hoursPerWeek);
+                        return !isNaN(h) && h > 0 ? Math.round(h * 52).toLocaleString() : '—';
+                      })()} annual hours
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Used to annualize hourly employee compensation for CUPA comparison
+                  </p>
+                </div>
+              </div>
+
+              {/* Advanced YOS Configuration (collapsible) */}
+              <div className="rounded-lg border">
+                <button
+                  type="button"
+                  className="flex items-center gap-2 w-full p-3 text-sm text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={() => setShowAdvancedConfig(!showAdvancedConfig)}
+                >
+                  {showAdvancedConfig ? (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  )}
+                  Advanced: Years-of-Service Parameters
+                </button>
+                {showAdvancedConfig && (
+                  <div className="px-3 pb-3 space-y-3 border-t pt-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label htmlFor="yosAnnualIncrease">Annual YOS Increase (%)</Label>
+                        <Input
+                          id="yosAnnualIncrease"
+                          type="number"
+                          step="0.25"
+                          min="0"
+                          max="20"
+                          value={yosAnnualIncrease}
+                          onChange={(e) => setYosAnnualIncrease(e.target.value)}
+                          className="mt-1"
+                        />
+                        <p className="text-xs text-muted-foreground mt-1">
+                          Median growth per year of service
+                        </p>
+                      </div>
+                      <div>
+                        <Label htmlFor="yosTargetYear">Target Year Cap</Label>
+                        <Input
+                          id="yosTargetYear"
+                          type="number"
+                          step="1"
+                          min="1"
+                          max="30"
+                          value={yosTargetYear}
+                          onChange={(e) => setYosTargetYear(e.target.value)}
+                          className="mt-1"
+                        />
+                        <p className="text-xs text-muted-foreground mt-1">
+                          YOS growth stops after this year
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {calcError && (
                 <div className="bg-destructive/10 text-destructive text-sm p-3 rounded-md">
                   {calcError}

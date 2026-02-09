@@ -358,6 +358,8 @@ function createTables(database: SqlJsDatabase): void {
   const compensationColumns = [
     { name: 'current_salary', type: 'REAL' },
     { name: 'hire_date', type: 'TEXT' },
+    { name: 'role_start_date', type: 'TEXT' },
+    { name: 'hourly_rate', type: 'REAL' },
     { name: 'fte', type: 'REAL DEFAULT 1.0' },
     { name: 'appointment_months', type: 'INTEGER DEFAULT 12' },
     { name: 'compensation_type', type: "TEXT DEFAULT 'salaried'" },
@@ -448,6 +450,8 @@ function runMigrations(database: SqlJsDatabase): void {
           review_date TEXT,
           current_salary REAL,
           hire_date TEXT,
+          role_start_date TEXT,
+          hourly_rate REAL,
           fte REAL DEFAULT 1.0,
           appointment_months INTEGER DEFAULT 12,
           compensation_type TEXT DEFAULT 'salaried',
@@ -458,15 +462,24 @@ function runMigrations(database: SqlJsDatabase): void {
       `);
       
       // Copy data - keep most recent entry for each employee_id
+      // Use CASE to handle columns that may not exist yet in the old table
+      const oldPmCols = database.exec('PRAGMA table_info(position_mappings)');
+      const oldPmColNames = oldPmCols[0]?.values.map(row => row[1] as string) || [];
+      const hasRoleStartDate = oldPmColNames.includes('role_start_date');
+      const hasHourlyRate = oldPmColNames.includes('hourly_rate');
+      
       database.run(`
         INSERT OR REPLACE INTO position_mappings_new 
         (id, employee_id, cupa_code, institutional_title, employee_name, division, department, 
          supervisor, vp_stem, audit_status, assigned_reviewer_id, review_date, 
-         current_salary, hire_date, fte, appointment_months, compensation_type, 
+         current_salary, hire_date, role_start_date, hourly_rate, fte, appointment_months, compensation_type, 
          has_housing_benefit, housing_value, created_at)
         SELECT id, employee_id, cupa_code, institutional_title, employee_name, division, department,
                supervisor, vp_stem, audit_status, assigned_reviewer_id, review_date,
-               current_salary, hire_date, fte, appointment_months, compensation_type,
+               current_salary, hire_date, 
+               ${hasRoleStartDate ? 'role_start_date' : 'NULL'},
+               ${hasHourlyRate ? 'hourly_rate' : 'NULL'},
+               fte, appointment_months, compensation_type,
                has_housing_benefit, housing_value, created_at
         FROM position_mappings
         WHERE id IN (

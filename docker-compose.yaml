@@ -7,10 +7,14 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3001:3001"
+      - "3443:3443"
     environment:
       - NODE_ENV=production
       - PORT=3001
+      - HTTPS_PORT=3443
       - DATA_DIR=/app/data
+      - SSL_KEY_PATH=/app/certs/server.key
+      - SSL_CERT_PATH=/app/certs/server.crt
       - JWT_SECRET=${JWT_SECRET:-change-this-secret-in-production}
     volumes:
       - cupa-data:/app/data

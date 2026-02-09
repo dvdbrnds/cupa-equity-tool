@@ -89,6 +89,8 @@ export interface PositionMapping {
   // Compensation fields
   currentSalary?: number | null;
   hireDate?: string | null;
+  roleStartDate?: string | null;
+  hourlyRate?: number | null;
   fte?: number;
   appointmentMonths?: number;
   compensationType?: CompensationType;
@@ -275,6 +277,9 @@ export interface EquityAnalysisWithPosition extends EquityAnalysis {
   division: string;
   department: string;
   currentSalary: number | null;
+  hireDate: string | null;
+  roleStartDate: string | null;
+  hourlyRate: number | null;
   fte: number;
   appointmentMonths: number;
   compensationType: CompensationType;

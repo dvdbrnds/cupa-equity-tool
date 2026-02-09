@@ -428,10 +428,10 @@ export const importApi = {
 
 // Equity Analysis API
 export const equityAnalysisApi = {
-  calculate: (dataYear: string) =>
-    fetchApi<{ success: boolean; analyzed: number; errors: number; message: string }>(
+  calculate: (dataYear: string, config?: { annualIncrease?: number; targetYear?: number; hourlyAnnualHours?: number }) =>
+    fetchApi<{ success: boolean; analyzed: number; errors: number; message: string; config?: { annualIncrease: number; targetYear: number; hourlyAnnualHours: number } }>(
       '/equity-analysis/calculate',
-      { method: 'POST', body: JSON.stringify({ dataYear }) }
+      { method: 'POST', body: JSON.stringify({ dataYear, ...config }) }
     ),
 
   getSummary: () =>
