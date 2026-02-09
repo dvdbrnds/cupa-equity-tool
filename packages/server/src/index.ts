@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import path from 'path';
+import https from 'https';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 import { errorHandler } from './middleware/error-handler.js';
@@ -70,11 +72,28 @@ async function main() {
   // Error handling
   app.use(errorHandler);
 
-  // Start HTTP server — Traefik handles SSL termination
+  // Start HTTP server
   app.listen(Number(PORT), '0.0.0.0', () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
+    console.log(`HTTP server running on http://0.0.0.0:${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   });
+
+  // Start HTTPS server if certificates exist
+  const certPath = process.env.SSL_CERT_PATH || '/app/certs/server.crt';
+  const keyPath = process.env.SSL_KEY_PATH || '/app/certs/server.key';
+  const sslPort = parseInt(process.env.SSL_PORT || '3443', 10);
+
+  if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
+    const httpsOptions = {
+      cert: fs.readFileSync(certPath),
+      key: fs.readFileSync(keyPath),
+    };
+    https.createServer(httpsOptions, app).listen(sslPort, '0.0.0.0', () => {
+      console.log(`HTTPS server running on https://0.0.0.0:${sslPort}`);
+    });
+  } else {
+    console.log('No SSL certificates found - HTTPS disabled');
+  }
 
   // Graceful shutdown
   process.on('SIGINT', () => {
