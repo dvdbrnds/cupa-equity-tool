@@ -658,17 +658,53 @@ function runMigrations(database: SqlJsDatabase): void {
     }
   }
 
-  // Add SAML/Okta columns to users table if they don't exist
+  // Migrate users table for SAML/Okta support:
+  // - Make password_hash nullable (Okta users don't have passwords)
+  // - Add okta_id and auth_provider columns
   const userColumns = database.exec('PRAGMA table_info(users)');
   const userColumnNames = userColumns[0]?.values.map(row => row[1] as string) || [];
   
-  if (!userColumnNames.includes('okta_id')) {
+  // Check if we need to migrate by looking at password_hash NOT NULL constraint
+  const usersTableInfo = database.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'");
+  const usersCreateSql = usersTableInfo[0]?.values[0]?.[0] as string || '';
+  const needsOktaMigration = !userColumnNames.includes('okta_id') || usersCreateSql.includes('password_hash TEXT NOT NULL');
+
+  if (needsOktaMigration) {
+    console.log('Migrating users table for Okta/SAML support...');
     try {
-      database.run("ALTER TABLE users ADD COLUMN okta_id TEXT DEFAULT NULL");
-      database.run("ALTER TABLE users ADD COLUMN auth_provider TEXT DEFAULT 'local'");
-      console.log('Added okta_id and auth_provider columns to users');
-    } catch {
-      // Columns might already exist
+      database.run(`
+        CREATE TABLE IF NOT EXISTS users_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          email TEXT UNIQUE NOT NULL,
+          password_hash TEXT,
+          name TEXT NOT NULL,
+          role TEXT NOT NULL CHECK (role IN ('system_admin', 'hr_admin', 'hr_analyst', 'vp_reviewer', 'executive', 'academic_dean')),
+          division TEXT,
+          is_active INTEGER NOT NULL DEFAULT 1,
+          okta_id TEXT,
+          auth_provider TEXT DEFAULT 'local',
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      `);
+
+      // Copy existing data
+      const hasOktaId = userColumnNames.includes('okta_id');
+      const hasAuthProvider = userColumnNames.includes('auth_provider');
+      
+      database.run(`
+        INSERT INTO users_new (id, email, password_hash, name, role, division, is_active, okta_id, auth_provider, created_at)
+        SELECT id, email, password_hash, name, role, division, is_active,
+               ${hasOktaId ? 'okta_id' : 'NULL'},
+               ${hasAuthProvider ? 'auth_provider' : "'local'"},
+               created_at
+        FROM users
+      `);
+
+      database.run('DROP TABLE users');
+      database.run('ALTER TABLE users_new RENAME TO users');
+      console.log('Migrated users table — password_hash now nullable, okta_id/auth_provider added');
+    } catch (err) {
+      console.error('Failed to migrate users table:', err);
     }
   }
 
