@@ -12,6 +12,13 @@ services:
       - PORT=3001
       - DATA_DIR=/app/data
       - JWT_SECRET=${JWT_SECRET:-change-this-secret-in-production}
+      # SAML/Okta SSO - set these to enable Okta login
+      - SAML_ENTRY_POINT=${SAML_ENTRY_POINT:-}
+      - SAML_ISSUER=${SAML_ISSUER:-}
+      - SAML_CERT=${SAML_CERT:-}
+      - SAML_CALLBACK_URL=${SAML_CALLBACK_URL:-}
+      - SAML_ADMIN_GROUP=${SAML_ADMIN_GROUP:-CUPA Admins}
+      - SAML_VP_GROUP=${SAML_VP_GROUP:-CUPA VPs}
     volumes:
       - cupa-data:/app/data
     restart: unless-stopped

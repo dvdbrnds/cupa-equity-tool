@@ -1,9 +1,12 @@
 import { Router, type Request, type Response } from 'express';
 import bcrypt from 'bcryptjs';
+import passport from 'passport';
+import express from 'express';
 import { z } from 'zod';
 import { dbGet, dbRun } from '../db/init.js';
 import { generateToken, requireAuth, type AuthenticatedRequest } from '../middleware/auth.js';
 import { UnauthorizedError, BadRequestError } from '../middleware/error-handler.js';
+import { SAML_ENABLED, findOrCreateSamlUser, getSpMetadata } from '../auth/saml.js';
 import type { User, AuthSession } from '@cupa/shared';
 
 export const authRouter = Router();
@@ -155,4 +158,82 @@ authRouter.post('/change-password', requireAuth, (req: Request, res: Response) =
   // Clear token to force re-login
   res.clearCookie('token');
   res.json({ message: 'Password changed successfully. Please log in again.' });
+});
+
+// ── SAML / Okta SSO Routes ─────────────────────────────────────────────────
+
+// GET /api/auth/saml/enabled - Check if SAML is configured
+authRouter.get('/saml/enabled', (_req: Request, res: Response) => {
+  res.json({ enabled: SAML_ENABLED });
+});
+
+// GET /api/auth/saml/login - Initiates SAML authentication (redirects to Okta)
+authRouter.get('/saml/login', (req: Request, res: Response, next) => {
+  if (!SAML_ENABLED) {
+    res.status(404).json({ error: 'SAML SSO is not configured' });
+    return;
+  }
+
+  passport.authenticate('saml', {
+    session: false,
+    failureRedirect: '/login?error=saml_failed',
+  })(req, res, next);
+});
+
+// POST /api/auth/saml/callback - Okta posts SAML response here (ACS URL)
+authRouter.post(
+  '/saml/callback',
+  express.urlencoded({ extended: false }),
+  (req: Request, res: Response) => {
+    if (!SAML_ENABLED) {
+      res.status(404).json({ error: 'SAML SSO is not configured' });
+      return;
+    }
+
+    passport.authenticate('saml', { session: false }, (err: Error | null, user: User | false) => {
+      if (err) {
+        console.error('SAML authentication error:', err.message);
+        res.redirect(`/login?error=${encodeURIComponent(err.message)}`);
+        return;
+      }
+
+      if (!user) {
+        res.redirect('/login?error=saml_no_user');
+        return;
+      }
+
+      // Generate JWT and set cookie (same as local login)
+      try {
+        const token = generateToken(user);
+
+        const forwardedProto = req.headers['x-forwarded-proto'];
+        const isSecure = forwardedProto === 'https' || req.secure;
+        const useSecureCookie = process.env.ALLOW_INSECURE_COOKIES === 'true' ? false : isSecure;
+
+        res.cookie('token', token, {
+          httpOnly: true,
+          secure: useSecureCookie,
+          sameSite: 'lax',
+          maxAge: 8 * 60 * 60 * 1000,
+        });
+
+        // Redirect to app dashboard
+        res.redirect('/');
+      } catch (tokenErr) {
+        console.error('Token generation error:', tokenErr);
+        res.redirect('/login?error=token_failed');
+      }
+    })(req, res);
+  }
+);
+
+// GET /api/auth/saml/metadata - SP metadata for Okta admin setup
+authRouter.get('/saml/metadata', (_req: Request, res: Response) => {
+  const metadata = getSpMetadata();
+  if (!metadata) {
+    res.status(404).json({ error: 'SAML not configured' });
+    return;
+  }
+  res.type('application/xml');
+  res.send(metadata);
 });

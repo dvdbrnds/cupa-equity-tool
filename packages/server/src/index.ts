@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
+import passport from 'passport';
 import path from 'path';
 import https from 'https';
 import fs from 'fs';
@@ -19,6 +20,7 @@ import { vpRolesRouter } from './routes/vp-roles.js';
 import { equityAnalysisRouter } from './routes/equity-analysis.js';
 import { reviewCyclesRouter } from './routes/review-cycles.js';
 import { initDatabaseAsync, startAutoSave, closeDatabase } from './db/init.js';
+import { initializeSaml } from './auth/saml.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,6 +43,10 @@ async function main() {
   }));
   app.use(express.json());
   app.use(cookieParser());
+
+  // Initialize Passport and SAML strategy (Okta SSO)
+  app.use(passport.initialize());
+  initializeSaml();
 
   // API Routes
   app.use('/api/auth', authRouter);

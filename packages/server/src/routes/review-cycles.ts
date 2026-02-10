@@ -163,7 +163,7 @@ reviewCyclesRouter.post('/', requireEditor, (req: Request, res: Response) => {
   const result = dbRun(`
     INSERT INTO equity_review_cycles (name, fiscal_year, total_budget, cupa_data_year, deadline, notes, created_by_id, status)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'draft')
-  `, [name, fiscalYear, totalBudget || null, cupaDataYear || null, deadline || null, notes || null, authReq.user.userId]);
+  `, [name, fiscalYear, totalBudget ?? 100000, cupaDataYear || null, deadline || null, notes || null, authReq.user.userId]);
   
   res.status(201).json({ 
     success: true, 

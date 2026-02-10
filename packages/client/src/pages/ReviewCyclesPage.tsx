@@ -81,7 +81,7 @@ export function ReviewCyclesPage() {
   const [newCycle, setNewCycle] = useState({
     name: '',
     fiscalYear: new Date().getFullYear().toString(),
-    totalBudget: '',
+    totalBudget: '100000',
     cupaDataYear: '',
     deadline: '',
     notes: '',
