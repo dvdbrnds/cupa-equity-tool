@@ -573,6 +573,15 @@ export const equityAnalysisApi = {
     ),
 };
 
+// Admin API
+export const adminApi = {
+  resetDatabase: () =>
+    fetchApi<{ success: boolean; message: string; usersCreated: number }>(
+      '/admin/reset-database',
+      { method: 'POST' }
+    ),
+};
+
 // VP Roles API
 export const vpRolesApi = {
   list: () => fetchApi<VpRole[]>('/vp-roles'),

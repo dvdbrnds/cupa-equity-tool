@@ -35,9 +35,9 @@ function mapGroupsToRole(groups: string[]): AppRole {
   const adminGroupLower = SAML_CONFIG.adminGroup.toLowerCase();
   const vpGroupLower = SAML_CONFIG.vpGroup.toLowerCase();
 
-  // Check for admin group membership
+  // Check for admin group membership — full system administrator
   if (lowerGroups.some(g => g === adminGroupLower || g.includes(adminGroupLower))) {
-    return 'hr_admin';
+    return 'system_admin';
   }
 
   // Check for VP group membership
@@ -134,8 +134,8 @@ export function findOrCreateSamlUser(profile: Profile): { user: User; token: str
       );
     }
 
-    // Update role based on group membership (unless system_admin — don't demote)
-    if (dbUser.role !== 'system_admin' && attrs.groups.length > 0) {
+    // Update role based on group membership on every login
+    if (attrs.groups.length > 0) {
       const newRole = mapGroupsToRole(attrs.groups);
       if (newRole !== dbUser.role) {
         dbRun('UPDATE users SET role = ? WHERE id = ?', [newRole, dbUser.id]);

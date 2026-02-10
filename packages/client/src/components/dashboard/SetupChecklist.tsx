@@ -16,6 +16,7 @@ import {
   AlertCircle,
   Wand2,
   Loader2,
+  Trash2,
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -37,7 +38,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import { dashboardApi, importApi, equityAnalysisApi } from '@/services/api';
+import { dashboardApi, importApi, equityAnalysisApi, adminApi } from '@/services/api';
 import type { ImportResult } from '@cupa/shared';
 
 interface DataHealth {
@@ -93,6 +94,11 @@ export function SetupChecklist() {
   // Generate fake data
   const [isGenerating, setIsGenerating] = useState(false);
   const [generateMsg, setGenerateMsg] = useState<string | null>(null);
+
+  // Reset database
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetMsg, setResetMsg] = useState<string | null>(null);
 
   const loadHealth = useCallback(() => {
     dashboardApi.getDataHealth().then(setHealth).catch(console.error);
@@ -329,6 +335,27 @@ export function SetupChecklist() {
     }
   }
 
+  async function handleResetDatabase() {
+    setIsResetting(true);
+    setResetMsg(null);
+    try {
+      const result = await adminApi.resetDatabase();
+      setResetMsg(result.message);
+      if (result.success) {
+        loadHealth();
+        // After reset, the user's session cookie is for a deleted user.
+        // Redirect to login after a brief delay so they can see the success message.
+        setTimeout(() => {
+          window.location.href = '/login';
+        }, 1500);
+      }
+    } catch (err) {
+      setResetMsg(err instanceof Error ? err.message : 'Reset failed');
+    } finally {
+      setIsResetting(false);
+    }
+  }
+
   function toggleSheet(name: string) {
     setSelectedSheets((prev) =>
       prev.includes(name) ? prev.filter((s) => s !== name) : [...prev, name]
@@ -374,6 +401,16 @@ export function SetupChecklist() {
               <CardTitle className="text-lg">Data Pipeline</CardTitle>
             </button>
             <div className="flex items-center gap-3">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowResetConfirm(true)}
+                className="text-destructive hover:text-destructive hover:bg-destructive/10 h-7 px-2 text-xs"
+                title="Reset all data"
+              >
+                <Trash2 className="h-3.5 w-3.5 mr-1" />
+                Reset
+              </Button>
               <div className="flex items-center gap-2">
                 {steps.map((step) => (
                   <div
@@ -712,6 +749,60 @@ export function SetupChecklist() {
                   )}
                 </Button>
               )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Reset Database Confirmation Dialog */}
+      {showResetConfirm && (
+        <Dialog open onOpenChange={() => { setShowResetConfirm(false); setResetMsg(null); }}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="text-destructive flex items-center gap-2">
+                <Trash2 className="h-5 w-5" />
+                Reset Database
+              </DialogTitle>
+              <DialogDescription>
+                This will permanently delete <strong>all imported data</strong> including
+                CUPA catalog, positions, salary data, equity analysis, and review cycles.
+                Login accounts will be recreated with default passwords.
+              </DialogDescription>
+            </DialogHeader>
+            {resetMsg && (
+              <div className={`p-3 rounded-lg text-sm ${
+                resetMsg.includes('complete')
+                  ? 'bg-green-50 dark:bg-green-950/30 text-green-700 dark:text-green-300'
+                  : 'bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300'
+              }`}>
+                {resetMsg}
+              </div>
+            )}
+            <DialogFooter className="gap-2">
+              <Button
+                variant="outline"
+                onClick={() => { setShowResetConfirm(false); setResetMsg(null); }}
+                disabled={isResetting}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={handleResetDatabase}
+                disabled={isResetting}
+              >
+                {isResetting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Resetting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Yes, Reset Everything
+                  </>
+                )}
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

@@ -19,6 +19,7 @@ import { dashboardRouter } from './routes/dashboard.js';
 import { vpRolesRouter } from './routes/vp-roles.js';
 import { equityAnalysisRouter } from './routes/equity-analysis.js';
 import { reviewCyclesRouter } from './routes/review-cycles.js';
+import { adminRouter } from './routes/admin.js';
 import { initDatabaseAsync, startAutoSave, closeDatabase } from './db/init.js';
 import { initializeSaml } from './auth/saml.js';
 
@@ -60,6 +61,7 @@ async function main() {
   app.use('/api/vp-roles', vpRolesRouter);
   app.use('/api/equity-analysis', equityAnalysisRouter);
   app.use('/api/review-cycles', reviewCyclesRouter);
+  app.use('/api/admin', adminRouter);
 
   // Health check
   app.get('/api/health', (_req, res) => {
