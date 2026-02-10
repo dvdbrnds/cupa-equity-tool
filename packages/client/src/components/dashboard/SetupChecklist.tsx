@@ -340,14 +340,11 @@ export function SetupChecklist() {
     setResetMsg(null);
     try {
       const result = await adminApi.resetDatabase();
-      setResetMsg(result.message);
       if (result.success) {
+        setResetMsg('Reset complete! All data cleared, test users recreated. You need to log in again.');
         loadHealth();
-        // After reset, the user's session cookie is for a deleted user.
-        // Redirect to login after a brief delay so they can see the success message.
-        setTimeout(() => {
-          window.location.href = '/login';
-        }, 1500);
+      } else {
+        setResetMsg(result.message);
       }
     } catch (err) {
       setResetMsg(err instanceof Error ? err.message : 'Reset failed');
@@ -779,30 +776,38 @@ export function SetupChecklist() {
               </div>
             )}
             <DialogFooter className="gap-2">
-              <Button
-                variant="outline"
-                onClick={() => { setShowResetConfirm(false); setResetMsg(null); }}
-                disabled={isResetting}
-              >
-                Cancel
-              </Button>
-              <Button
-                variant="destructive"
-                onClick={handleResetDatabase}
-                disabled={isResetting}
-              >
-                {isResetting ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Resetting...
-                  </>
-                ) : (
-                  <>
-                    <Trash2 className="h-4 w-4 mr-2" />
-                    Yes, Reset Everything
-                  </>
-                )}
-              </Button>
+              {resetMsg && resetMsg.includes('Reset complete') ? (
+                <Button onClick={() => { window.location.href = '/login'; }}>
+                  Go to Login
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    variant="outline"
+                    onClick={() => { setShowResetConfirm(false); setResetMsg(null); }}
+                    disabled={isResetting}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    onClick={handleResetDatabase}
+                    disabled={isResetting}
+                  >
+                    {isResetting ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Resetting...
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="h-4 w-4 mr-2" />
+                        Yes, Reset Everything
+                      </>
+                    )}
+                  </Button>
+                </>
+              )}
             </DialogFooter>
           </DialogContent>
         </Dialog>
