@@ -90,6 +90,15 @@ export function DashboardPage() {
         equityAnalysisApi.getSummary(),
         equityAnalysisApi.getByVp(),
       ]);
+      // Log diagnostics for debugging production issues
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const diag = (summaryData as any)?.diagnostics;
+      if (diag) {
+        console.log('[Equity] Diagnostics:', JSON.stringify(diag));
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const errors = (summaryData as any)?.errorSample;
+        if (errors?.length) console.log('[Equity] Error reasons:', JSON.stringify(errors));
+      }
       setSummary(summaryData);
       setVpSummary(vpData);
     } catch (err) {
@@ -116,6 +125,12 @@ export function DashboardPage() {
   }
 
   const hasAnalysis = summary && summary.analyzedPositions > 0;
+  // Also check if analysis was run but all positions errored (equity_gap all NULL)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const diagnostics = (summary as any)?.diagnostics;
+  const analysisRanButEmpty = !hasAnalysis && diagnostics?.totalEaRows > 0;
+  // Show VP list if we have data OR if analysis ran (even with errors)
+  const showVpSection = hasAnalysis || vpSummary.length > 0;
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_320px]">
@@ -142,28 +157,44 @@ export function DashboardPage() {
           </Alert>
         )}
 
+        {/* Analysis ran but no valid results — show diagnostic info */}
+        {analysisRanButEmpty && (
+          <Alert>
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Equity analysis ran but found no valid results</AlertTitle>
+            <AlertDescription>
+              {diagnostics.totalEaRows} positions were processed but {diagnostics.withoutGap} had errors.
+              {diagnostics.noCupaCode > 0 && ` ${diagnostics.noCupaCode} positions have no CUPA code.`}
+              {diagnostics.noSalary > 0 && ` ${diagnostics.noSalary} positions have no salary data.`}
+              {diagnostics.cupaSalaryCount === 0 && ' No CUPA salary data has been imported — upload CUPA salary data and re-run the analysis.'}
+              {' '}Try re-running the equity analysis from the Data Pipeline above.
+            </AlertDescription>
+          </Alert>
+        )}
+
         {/* Data Pipeline -- always visible */}
         <SetupChecklist />
 
         {/* Active Review Cycle Banner */}
         {activeCycle && <CycleStatusBanner cycle={activeCycle} />}
 
-        {/* Equity Summary -- only shown after analysis */}
+        {/* Equity Summary -- shown after analysis with valid results */}
         {hasAnalysis && (
-          <>
-            <EquitySummaryCards
-              totalGap={summary?.totalGap || 0}
-              averageGap={summary?.averageGap || 0}
-              positionsWithGap={summary?.positionsWithGap || 0}
-              analyzedPositions={summary?.analyzedPositions || 0}
-            />
+          <EquitySummaryCards
+            totalGap={summary?.totalGap || 0}
+            averageGap={summary?.averageGap || 0}
+            positionsWithGap={summary?.positionsWithGap || 0}
+            analyzedPositions={summary?.analyzedPositions || 0}
+          />
+        )}
 
-            <VPDivisionList
-              vpSummary={vpSummary}
-              summary={summary}
-              vpAllocations={vpAllocations}
-            />
-          </>
+        {/* VP Division List -- shown if analysis has data OR VP summary is available */}
+        {showVpSection && (
+          <VPDivisionList
+            vpSummary={vpSummary}
+            summary={summary}
+            vpAllocations={vpAllocations}
+          />
         )}
       </div>
 

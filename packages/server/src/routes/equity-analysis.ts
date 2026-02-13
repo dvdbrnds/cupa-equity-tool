@@ -100,7 +100,42 @@ equityAnalysisRouter.post('/calculate', requireEditor, (req: Request, res: Respo
 // Get equity analysis summary
 equityAnalysisRouter.get('/summary', (req: Request, res: Response) => {
   const summary = getEquitySummary();
-  res.json(summary);
+
+  // Add diagnostic counts so we can debug when analyzedPositions is 0
+  const diagnostics = dbGet<{
+    totalEaRows: number;
+    withGap: number;
+    withoutGap: number;
+    noCupaCode: number;
+    noSalary: number;
+    totalPositions: number;
+    withCupaCode: number;
+    withSalary: number;
+    cupaSalaryCount: number;
+  }>(`
+    SELECT
+      (SELECT COUNT(*) FROM equity_analysis) as totalEaRows,
+      (SELECT COUNT(*) FROM equity_analysis WHERE equity_gap IS NOT NULL) as withGap,
+      (SELECT COUNT(*) FROM equity_analysis WHERE equity_gap IS NULL) as withoutGap,
+      (SELECT COUNT(*) FROM position_mappings WHERE cupa_code IS NULL OR cupa_code = '') as noCupaCode,
+      (SELECT COUNT(*) FROM position_mappings WHERE current_salary IS NULL OR current_salary = 0) as noSalary,
+      (SELECT COUNT(*) FROM position_mappings) as totalPositions,
+      (SELECT COUNT(*) FROM position_mappings WHERE cupa_code IS NOT NULL AND cupa_code != '') as withCupaCode,
+      (SELECT COUNT(*) FROM position_mappings WHERE current_salary IS NOT NULL AND current_salary > 0) as withSalary,
+      (SELECT COUNT(*) FROM cupa_salary_data) as cupaSalaryCount
+  `);
+
+  // Include top error reasons from equity_analysis
+  const errorSample = dbAll<{ adjustment_notes: string; cnt: number }>(`
+    SELECT adjustment_notes, COUNT(*) as cnt 
+    FROM equity_analysis 
+    WHERE equity_gap IS NULL 
+    GROUP BY adjustment_notes 
+    ORDER BY cnt DESC 
+    LIMIT 5
+  `);
+
+  res.json({ ...summary, diagnostics, errorSample });
 });
 
 // Get equity summary broken down by VP division
