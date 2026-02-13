@@ -90,6 +90,8 @@ export function DashboardPage() {
         equityAnalysisApi.getSummary(),
         equityAnalysisApi.getByVp(),
       ]);
+      console.log('[DEBUG] summaryData:', JSON.stringify(summaryData));
+      console.log('[DEBUG] vpData length:', vpData?.length);
       setSummary(summaryData);
       setVpSummary(vpData);
     } catch (err) {
@@ -141,6 +143,15 @@ export function DashboardPage() {
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
+
+        {/* DEBUG: temporary diagnostic — remove after fixing */}
+        <div className="p-3 bg-yellow-50 border border-yellow-300 rounded text-xs font-mono">
+          <strong>DEBUG:</strong>{' '}
+          summary={summary ? `analyzedPositions=${summary.analyzedPositions}, totalGap=${summary.totalGap}` : 'null'}{' | '}
+          hasAnalysis={String(!!summary && summary.analyzedPositions > 0)}{' | '}
+          vpSummary.length={vpSummary.length}{' | '}
+          error={error || 'none'}
+        </div>
 
         {/* Data Pipeline -- always visible */}
         <SetupChecklist />
