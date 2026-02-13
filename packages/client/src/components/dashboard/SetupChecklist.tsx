@@ -188,7 +188,7 @@ export function SetupChecklist() {
       isDone: health.compensation.imported,
       detail: health.compensation.imported
         ? `${health.compensation.matchedCount} matched${health.compensation.unmatchedCount > 0 ? `, ${health.compensation.unmatchedCount} unmatched` : ''}`
-        : 'Upload salary data or generate test data',
+        : 'Upload salary file (.xlsx/.csv) or generate test data',
       hasUpload: true,
     },
     {
@@ -374,7 +374,7 @@ export function SetupChecklist() {
     positions:
       'Upload the audit workbook with VP division tabs. Each sheet is imported as a division.',
     compensation:
-      'Upload employee compensation data matched by Employee ID. Or generate test data below.',
+      'Upload an Excel or CSV with employee data (EEID, Name, and optionally Salary, Hire Date, FTE, etc). Matches to existing positions by Employee ID or name.',
     'cupa-salary':
       'Upload CUPA median salary survey data for equity gap calculations.',
     'equity-analysis': 'Calculate equity gaps for all positions using CUPA salary data.',

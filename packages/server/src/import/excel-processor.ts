@@ -97,7 +97,7 @@ const COLUMN_MAPPINGS = {
   cupaDescription: ['CUPA Position Description', 'CUPA Description', 'Description', 'Position Description'],
   blsSocCode: ['BLS SOC #', 'BLS SOC', 'SOC Code', 'SOC #', 'BLS_SOC'],
   blsSocName: ['BLS SOC Category Name', 'SOC Category', 'SOC Name', 'BLS Category', 'BLS Standard Occupational Code (SOC) Category Name'],
-  employeeId: ['Employee ID', 'EmployeeID', 'Employee_ID', 'EE ID', 'ID'],
+  employeeId: ['Employee ID', 'EmployeeID', 'Employee_ID', 'EE ID', 'EEID', 'ID', 'Emp ID', 'EE_ID'],
   institutionalTitle: ['Moravian Job Title', 'Job Title', 'Title', 'Position Title', 'Institutional Title'],
   lastName: ['Last Name', 'LastName', 'Last_Name', 'Surname'],
   firstName: ['First Name', 'FirstName', 'First_Name', 'Given Name'],
@@ -113,6 +113,42 @@ function findColumn(headers: string[], possibleNames: string[]): number {
     const idx = headerLower.indexOf(name.toLowerCase());
     if (idx !== -1) return idx;
   }
+  return -1;
+}
+
+/**
+ * Fuzzy find an Employee ID column. Handles typos, abbreviations, and
+ * spelled-out variations like "EEID", "Employe ID", "Employeee ID", etc.
+ * Returns the column index or -1 if not found.
+ */
+function findEmployeeIdColumn(headers: string[]): number {
+  // First try exact match against the known list
+  const exact = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.employeeId);
+  if (exact !== -1) return exact;
+
+  // Also check the positions column mappings list
+  const exactPositions = findColumn(headers, COLUMN_MAPPINGS.employeeId);
+  if (exactPositions !== -1) return exactPositions;
+
+  // Fuzzy match: look for headers that look like an employee ID column
+  const headerLower = headers.map(h => (h || '').toString().toLowerCase().trim());
+  for (let i = 0; i < headerLower.length; i++) {
+    const h = headerLower[i];
+    if (!h) continue;
+
+    // "eeid" or "ee id" or "ee_id" patterns
+    if (/^ee\s*[-_]?\s*id$/i.test(h)) return i;
+    // "emp id", "emp_id", "empid"
+    if (/^emp\s*[-_]?\s*id$/i.test(h)) return i;
+    // "employee id" with typos: emplyee, employe, employeee, emploee, etc.
+    // Match: starts with "emp", has some letters, ends with "id" (with optional space/separator)
+    if (/^emp\w*[eoy]\w*\s*[-_]?\s*id$/i.test(h)) return i;
+    // "employee identification" or "employee ident"
+    if (/^emp\w*\s+ident/i.test(h)) return i;
+    // Just "id" alone (low priority — only if it's the only 2-char header)
+    // Skip this to avoid false positives
+  }
+
   return -1;
 }
 
@@ -236,7 +272,7 @@ export async function importPositions(buffer: Buffer, userId: number, sheetNames
 
     const headers = data[0] as string[];
     const colCupaCode = findColumn(headers, COLUMN_MAPPINGS.cupaCode);
-    const colEmployeeId = findColumn(headers, COLUMN_MAPPINGS.employeeId);
+    const colEmployeeId = findEmployeeIdColumn(headers);
     const colTitle = findColumn(headers, COLUMN_MAPPINGS.institutionalTitle);
     const colLastName = findColumn(headers, COLUMN_MAPPINGS.lastName);
     const colFirstName = findColumn(headers, COLUMN_MAPPINGS.firstName);
@@ -305,14 +341,20 @@ export async function importPositions(buffer: Buffer, userId: number, sheetNames
 
 // Column mappings for compensation data import
 const COMPENSATION_COLUMN_MAPPINGS = {
-  employeeId: ['Employee ID', 'EmployeeID', 'Employee_ID', 'EE ID', 'ID', 'Emp ID'],
-  currentSalary: ['Salary', 'Annual Salary', 'Current Salary', 'Base Salary', 'Annual Pay', 'Base Pay', 'Annualized Salary'],
-  hourlyRate: ['Hourly Rate', 'Hourly Pay', 'Hour Rate', 'Rate/Hour', 'Rate Per Hour', 'Pay Rate'],
-  hireDate: ['Hire Date', 'Original Hire Date', 'Start Date', 'Date of Hire', 'Institution Start Date'],
-  roleStartDate: ['Role Start Date', 'Date in Role', 'Position Start Date', 'Job Start Date', 'Current Position Date', 'Date in Current Position', 'Role Date'],
-  fte: ['FTE', 'Full Time Equivalent', 'Work %', 'Work Percent', 'Percent Time'],
+  employeeId: ['Employee ID', 'EmployeeID', 'Employee_ID', 'EE ID', 'EEID', 'EE_ID', 'Emp ID', 'Worker ID', 'Badge', 'Badge #', 'Personnel #', 'Personnel Number'],
+  employeeName: ['Employee Name', 'Employee', 'Name', 'Full Name', 'Worker', 'Worker Name'],
+  lastName: ['Last Name', 'LastName', 'Last_Name', 'Surname', 'Last'],
+  firstName: ['First Name', 'FirstName', 'First_Name', 'Given Name', 'First'],
+  jobTitle: ['Job Title', 'Title', 'Position Title', 'Position', 'Moravian Job Title', 'Institutional Title', 'Position Name'],
+  department: ['Department', 'Dept', 'Dept Name', 'Department Name', 'Cost Center', 'Org Unit'],
+  division: ['Division', 'Div', 'VP Stem', 'VPStem', 'VP_Stem', 'VP', 'Senior Leader'],
+  currentSalary: ['Salary', 'Annual Salary', 'Current Salary', 'Base Salary', 'Annual Pay', 'Base Pay', 'Annualized Salary', 'Total Salary', 'Comp Rate', 'Compensation Rate', 'Annual Rate'],
+  hourlyRate: ['Hourly Rate', 'Hourly Pay', 'Hour Rate', 'Rate/Hour', 'Rate Per Hour', 'Pay Rate', 'Hourly'],
+  hireDate: ['Hire Date', 'Original Hire Date', 'Start Date', 'Date of Hire', 'Institution Start Date', 'Hire Dt', 'Original Hire'],
+  roleStartDate: ['Role Start Date', 'Date in Role', 'Position Start Date', 'Job Start Date', 'Current Position Date', 'Date in Current Position', 'Role Date', 'Job Entry Date'],
+  fte: ['FTE', 'Full Time Equivalent', 'Work %', 'Work Percent', 'Percent Time', 'Standard Hours'],
   appointmentMonths: ['Appt Months', 'Appointment', 'Contract Months', 'Months', 'Appointment Months', '10/12'],
-  compensationType: ['Comp Type', 'FLSA', 'Salaried/Hourly', 'Pay Type', 'Compensation Type', 'Exempt Status'],
+  compensationType: ['Comp Type', 'FLSA', 'Salaried/Hourly', 'Pay Type', 'Compensation Type', 'Exempt Status', 'Pay Class', 'Employee Type'],
   hasHousing: ['Housing', 'Housing Benefit', 'Has Housing', 'Receives Housing'],
   housingValue: ['Housing Value', 'Housing Amount', 'Housing Allowance'],
 };
@@ -366,6 +408,14 @@ function parseCompensationType(value: unknown): 'salaried' | 'hourly' {
   return 'salaried';
 }
 
+/**
+ * Normalize a name for fuzzy matching: lowercase, strip extra whitespace, remove suffixes
+ */
+function normalizeName(name: string): string {
+  return name.toLowerCase().replace(/\s+/g, ' ').trim()
+    .replace(/\s+(jr\.?|sr\.?|ii|iii|iv)$/i, '');
+}
+
 export async function importCompensationData(buffer: Buffer, sheetName?: string): Promise<ImportResult> {
   // Snapshot current salary data before making changes
   const snapshotCount = snapshotSalaryHistory();
@@ -386,7 +436,15 @@ export async function importCompensationData(buffer: Buffer, sheetName?: string)
   }
 
   const headers = data[0] as string[];
-  const colEmployeeId = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.employeeId);
+  
+  // Identify columns (use fuzzy finder for employee ID to handle typos)
+  const colEmployeeId = findEmployeeIdColumn(headers);
+  const colEmployeeName = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.employeeName);
+  const colLastName = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.lastName);
+  const colFirstName = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.firstName);
+  const colJobTitle = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.jobTitle);
+  const colDepartment = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.department);
+  const colDivision = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.division);
   const colSalary = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.currentSalary);
   const colHourlyRate = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.hourlyRate);
   const colHireDate = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.hireDate);
@@ -397,30 +455,68 @@ export async function importCompensationData(buffer: Buffer, sheetName?: string)
   const colHasHousing = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.hasHousing);
   const colHousingValue = findColumn(headers, COMPENSATION_COLUMN_MAPPINGS.housingValue);
 
-  if (colEmployeeId === -1) {
-    return { success: false, imported: 0, skipped: 0, errors: [{ row: 1, field: 'Employee ID', message: `Employee ID column not found. Available headers: ${headers.join(', ')}` }] };
+  // We need at least some way to identify employees
+  const hasNameColumn = colEmployeeName !== -1 || (colFirstName !== -1 && colLastName !== -1) || colLastName !== -1;
+  const hasIdentifier = colEmployeeId !== -1 || hasNameColumn;
+  const hasSalaryData = colSalary !== -1 || colHourlyRate !== -1;
+
+  if (!hasIdentifier) {
+    return { 
+      success: false, imported: 0, skipped: 0, 
+      errors: [{ 
+        row: 1, field: 'columns', 
+        message: `Could not find an employee identifier column. Need one of: Employee ID, EEID, Employee Name, or First/Last Name. Available headers: ${headers.join(', ')}` 
+      }] 
+    };
+  }
+
+  // Build a name lookup index for fallback matching
+  const existingPositions = dbAll<{ id: number; employee_id: string; employee_name: string; institutional_title: string }>(
+    'SELECT id, employee_id, employee_name, institutional_title FROM position_mappings'
+  );
+  const nameIndex = new Map<string, { id: number; employee_id: string; employee_name: string; institutional_title: string }[]>();
+  for (const pos of existingPositions) {
+    const key = normalizeName(pos.employee_name);
+    if (key && key !== 'unknown') {
+      if (!nameIndex.has(key)) nameIndex.set(key, []);
+      nameIndex.get(key)!.push(pos);
+    }
   }
 
   const errors: ImportValidationError[] = [];
   const warnings: ImportValidationError[] = [];
-  let updated = 0;
+  let updatedById = 0;
+  let updatedByName = 0;
+  let created = 0;
   let skipped = 0;
 
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
     const rowNum = i + 1;
 
-    const employeeId = normalizeString(row[colEmployeeId]);
-    if (!employeeId) { skipped++; continue; }
+    // Skip completely empty rows
+    const hasData = row.some(cell => cell !== null && cell !== undefined && cell !== '');
+    if (!hasData) { skipped++; continue; }
 
-    // Find existing position by employee ID
-    const position = dbGet<{ id: number }>('SELECT id FROM position_mappings WHERE employee_id = ?', [employeeId]);
-    if (!position) {
-      errors.push({ row: rowNum, field: 'employee_id', message: `Employee ID ${employeeId} not found in positions` });
-      skipped++;
-      continue;
+    // Extract identifiers
+    const employeeId = colEmployeeId !== -1 ? normalizeString(row[colEmployeeId]) : '';
+    let employeeName = '';
+    if (colEmployeeName !== -1) {
+      employeeName = normalizeString(row[colEmployeeName]);
+      // Handle "Last, First" format
+      if (employeeName.includes(',')) {
+        const parts = employeeName.split(',').map(s => s.trim());
+        employeeName = `${parts[1]} ${parts[0]}`.trim();
+      }
+    } else if (colFirstName !== -1 || colLastName !== -1) {
+      const first = colFirstName !== -1 ? normalizeString(row[colFirstName]) : '';
+      const last = colLastName !== -1 ? normalizeString(row[colLastName]) : '';
+      employeeName = [first, last].filter(Boolean).join(' ');
     }
 
+    if (!employeeId && !employeeName) { skipped++; continue; }
+
+    // Extract compensation fields
     const currentSalary = colSalary !== -1 ? parseNumber(row[colSalary]) : null;
     const hourlyRate = colHourlyRate !== -1 ? parseNumber(row[colHourlyRate]) : null;
     const hireDate = colHireDate !== -1 ? parseDate(row[colHireDate]) : null;
@@ -430,42 +526,161 @@ export async function importCompensationData(buffer: Buffer, sheetName?: string)
     const compensationType = colCompType !== -1 ? parseCompensationType(row[colCompType]) : 'salaried';
     const hasHousing = colHasHousing !== -1 ? parseBoolean(row[colHasHousing]) : false;
     const housingValue = colHousingValue !== -1 ? parseNumber(row[colHousingValue]) : 15000;
+    const jobTitle = colJobTitle !== -1 ? normalizeString(row[colJobTitle]) : '';
+    const department = colDepartment !== -1 ? normalizeString(row[colDepartment]) : '';
+    const division = colDivision !== -1 ? normalizeString(row[colDivision]) : '';
 
-    // For hourly employees, auto-annualize if hourly_rate is provided but current_salary is not
-    // Default: 37.5 hrs/week × 52 weeks = 1,950 annual hours (Moravian standard)
+    // Skip rows with no salary data only if the file has salary columns
+    // (if file has no salary columns at all, e.g. just EEID + Name, we still process every row)
+    if (hasSalaryData && currentSalary === null && hourlyRate === null) {
+      warnings.push({ row: rowNum, field: 'salary', message: `No salary or hourly rate for ${employeeName || employeeId}, skipped` });
+      skipped++;
+      continue;
+    }
+
+    // Auto-annualize hourly rates
     let effectiveSalary = currentSalary;
     if (compensationType === 'hourly' && hourlyRate && hourlyRate > 0 && !effectiveSalary) {
-      const annualHours = 1950; // Matches DEFAULT_EQUITY_CONFIG.hourlyAnnualHours
+      const annualHours = 1950;
       effectiveSalary = Math.round(hourlyRate * annualHours * 100) / 100;
       warnings.push({ row: rowNum, field: 'salary', message: `Auto-annualized hourly rate $${hourlyRate}/hr × ${annualHours}hrs = $${effectiveSalary.toLocaleString()}` });
     }
 
+    // --- Matching strategy: Employee ID → Name → Create new ---
+    let positionId: number | null = null;
+    let matchMethod = '';
+
+    // Strategy 1: Match by Employee ID (exact)
+    if (employeeId) {
+      const byId = dbGet<{ id: number }>('SELECT id FROM position_mappings WHERE employee_id = ?', [employeeId]);
+      if (byId) {
+        positionId = byId.id;
+        matchMethod = 'id';
+      }
+    }
+
+    // Strategy 2: Match by employee name (fuzzy)
+    if (!positionId && employeeName) {
+      const nameKey = normalizeName(employeeName);
+      const candidates = nameIndex.get(nameKey);
+      if (candidates && candidates.length === 1) {
+        positionId = candidates[0].id;
+        matchMethod = 'name';
+        warnings.push({ row: rowNum, field: 'match', message: `Matched "${employeeName}" by name to existing position (${candidates[0].employee_id})` });
+      } else if (candidates && candidates.length > 1) {
+        // Multiple name matches — try to disambiguate by title if we have one
+        if (jobTitle) {
+          const titleLower = jobTitle.toLowerCase();
+          const titleMatch = candidates.find(c => c.institutional_title?.toLowerCase() === titleLower);
+          if (titleMatch) {
+            positionId = titleMatch.id;
+            matchMethod = 'name+title';
+            warnings.push({ row: rowNum, field: 'match', message: `Matched "${employeeName}" by name+title to existing position (${titleMatch.employee_id})` });
+          }
+        }
+        if (!positionId) {
+          warnings.push({ row: rowNum, field: 'match', message: `Multiple employees named "${employeeName}" found — using first match. Consider adding Employee ID column for precision.` });
+          positionId = candidates[0].id;
+          matchMethod = 'name-ambiguous';
+        }
+      }
+    }
+
+    // Strategy 3: Create a new position_mappings record
+    if (!positionId) {
+      const newEmployeeId = employeeId || `COMP-${i}`;
+      const newName = employeeName || 'Unknown';
+      const newTitle = jobTitle || 'Unknown Title';
+      const newDept = department || 'Unknown';
+      const newDiv = division || 'Unknown';
+
+      try {
+        dbRun(`
+          INSERT INTO position_mappings (employee_id, institutional_title, employee_name, division, department, supervisor, vp_stem) 
+          VALUES (?, ?, ?, ?, ?, NULL, ?)
+        `, [newEmployeeId, newTitle, newName, newDiv, newDept, newDiv]);
+
+        const newPos = dbGet<{ id: number }>('SELECT id FROM position_mappings WHERE employee_id = ?', [newEmployeeId]);
+        if (newPos) {
+          positionId = newPos.id;
+          matchMethod = 'created';
+          // Also add to the name index for dedup within this import
+          const nameKey = normalizeName(newName);
+          if (nameKey && nameKey !== 'unknown') {
+            if (!nameIndex.has(nameKey)) nameIndex.set(nameKey, []);
+            nameIndex.get(nameKey)!.push({ id: newPos.id, employee_id: newEmployeeId, employee_name: newName, institutional_title: jobTitle || 'Unknown Title' });
+          }
+        }
+      } catch (err) {
+        errors.push({ row: rowNum, field: 'create', message: `Failed to create position for ${newName}: ${String(err)}` });
+        skipped++;
+        continue;
+      }
+    }
+
+    if (!positionId) {
+      errors.push({ row: rowNum, field: 'match', message: `Could not match or create position for ${employeeName || employeeId}` });
+      skipped++;
+      continue;
+    }
+
+    // Update the position with available data
     try {
-      dbRun(`
-        UPDATE position_mappings SET 
-          current_salary = ?,
-          hourly_rate = ?,
-          hire_date = ?,
-          role_start_date = ?,
-          fte = ?,
-          appointment_months = ?,
-          compensation_type = ?,
-          has_housing_benefit = ?,
-          housing_value = ?
-        WHERE id = ?
-      `, [
-        effectiveSalary,
-        hourlyRate,
-        hireDate,
-        roleStartDate,
-        fte ?? 1.0,
-        appointmentMonths ?? 12,
-        compensationType,
-        hasHousing ? 1 : 0,
-        housingValue ?? 15000,
-        position.id
-      ]);
-      updated++;
+      const updateParts: string[] = [];
+      const updateValues: unknown[] = [];
+
+      // Only set compensation fields if the file actually has those columns
+      if (hasSalaryData) {
+        updateParts.push('current_salary = ?', 'hourly_rate = ?');
+        updateValues.push(effectiveSalary, hourlyRate);
+      }
+      if (colCompType !== -1) {
+        updateParts.push('compensation_type = ?');
+        updateValues.push(compensationType);
+      }
+      if (colHireDate !== -1) {
+        updateParts.push('hire_date = ?');
+        updateValues.push(hireDate);
+      }
+      if (colRoleStartDate !== -1) {
+        updateParts.push('role_start_date = ?');
+        updateValues.push(roleStartDate);
+      }
+      if (colFte !== -1) {
+        updateParts.push('fte = ?');
+        updateValues.push(fte ?? 1.0);
+      }
+      if (colAppointmentMonths !== -1) {
+        updateParts.push('appointment_months = ?');
+        updateValues.push(appointmentMonths ?? 12);
+      }
+      if (colHasHousing !== -1) {
+        updateParts.push('has_housing_benefit = ?');
+        updateValues.push(hasHousing ? 1 : 0);
+      }
+      if (colHousingValue !== -1) {
+        updateParts.push('housing_value = ?');
+        updateValues.push(housingValue ?? 15000);
+      }
+
+      // Update employee name/title/dept if the file provides them
+      if (employeeName) { updateParts.push('employee_name = ?'); updateValues.push(employeeName); }
+      if (jobTitle) { updateParts.push('institutional_title = ?'); updateValues.push(jobTitle); }
+      if (department) { updateParts.push('department = ?'); updateValues.push(department); }
+      if (division) { updateParts.push('vp_stem = ?', 'division = ?'); updateValues.push(division, division); }
+
+      if (updateParts.length > 0) {
+        updateValues.push(positionId);
+        dbRun(`UPDATE position_mappings SET ${updateParts.join(', ')} WHERE id = ?`, updateValues);
+      }
+
+      if (matchMethod === 'created') {
+        created++;
+      } else if (matchMethod === 'id') {
+        updatedById++;
+      } else {
+        updatedByName++;
+      }
     } catch (err) {
       errors.push({ row: rowNum, field: 'database', message: String(err) });
       skipped++;
@@ -473,7 +688,19 @@ export async function importCompensationData(buffer: Buffer, sheetName?: string)
   }
 
   saveDatabase();
-  return { success: errors.length === 0, imported: updated, skipped, errors: errors.slice(0, 100), warnings: warnings.slice(0, 100) };
+
+  const totalImported = updatedById + updatedByName + created;
+  const summaryParts: string[] = [];
+  if (updatedById > 0) summaryParts.push(`${updatedById} matched by ID`);
+  if (updatedByName > 0) summaryParts.push(`${updatedByName} matched by name`);
+  if (created > 0) summaryParts.push(`${created} new positions created`);
+  if (skipped > 0) summaryParts.push(`${skipped} skipped`);
+  
+  if (summaryParts.length > 0) {
+    warnings.unshift({ row: 0, field: 'summary', message: `Import summary: ${summaryParts.join(', ')}` });
+  }
+
+  return { success: errors.length === 0, imported: totalImported, skipped, errors: errors.slice(0, 100), warnings: warnings.slice(0, 100) };
 }
 
 // Column mappings for CUPA salary data import
