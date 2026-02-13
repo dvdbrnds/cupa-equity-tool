@@ -348,8 +348,8 @@ const COMPENSATION_COLUMN_MAPPINGS = {
   jobTitle: ['Job Title', 'Title', 'Position Title', 'Position', 'Moravian Job Title', 'Institutional Title', 'Position Name'],
   department: ['Department', 'Dept', 'Dept Name', 'Department Name', 'Cost Center', 'Org Unit'],
   division: ['Division', 'Div', 'VP Stem', 'VPStem', 'VP_Stem', 'VP', 'Senior Leader'],
-  currentSalary: ['Salary', 'Annual Salary', 'Current Salary', 'Base Salary', 'Annual Pay', 'Base Pay', 'Annualized Salary', 'Total Salary', 'Comp Rate', 'Compensation Rate', 'Annual Rate'],
-  hourlyRate: ['Hourly Rate', 'Hourly Pay', 'Hour Rate', 'Rate/Hour', 'Rate Per Hour', 'Pay Rate', 'Hourly'],
+  currentSalary: ['Salary', 'Annual Salary', 'Current Salary', 'Base Salary', 'Annual Pay', 'Base Pay', 'Annualized Salary', 'Total Salary', 'Comp Rate', 'Compensation Rate', 'Annual Rate', 'Current Rate', 'Rate', 'Pay Rate', 'Current Pay'],
+  hourlyRate: ['Hourly Rate', 'Hourly Pay', 'Hour Rate', 'Rate/Hour', 'Rate Per Hour', 'Hourly'],
   hireDate: ['Hire Date', 'Original Hire Date', 'Start Date', 'Date of Hire', 'Institution Start Date', 'Hire Dt', 'Original Hire'],
   roleStartDate: ['Role Start Date', 'Date in Role', 'Position Start Date', 'Job Start Date', 'Current Position Date', 'Date in Current Position', 'Role Date', 'Job Entry Date'],
   fte: ['FTE', 'Full Time Equivalent', 'Work %', 'Work Percent', 'Percent Time', 'Standard Hours'],
@@ -538,10 +538,19 @@ export async function importCompensationData(buffer: Buffer, sheetName?: string)
       continue;
     }
 
-    // Auto-annualize hourly rates
+    // Smart hourly rate detection: if the "salary" value is very low (< $200),
+    // it's likely an hourly rate, not an annual salary. Auto-detect and annualize.
+    let effectiveHourlyRate = hourlyRate;
     let effectiveSalary = currentSalary;
-    if (compensationType === 'hourly' && hourlyRate && hourlyRate > 0 && !effectiveSalary) {
-      const annualHours = 1950;
+    const annualHours = 1950; // 37.5 hrs/week × 52 weeks
+
+    if (currentSalary !== null && currentSalary > 0 && currentSalary < 200 && colHourlyRate === -1) {
+      // Value looks like an hourly rate (e.g., $22.66), not an annual salary
+      effectiveHourlyRate = currentSalary;
+      effectiveSalary = Math.round(currentSalary * annualHours * 100) / 100;
+      warnings.push({ row: rowNum, field: 'salary', message: `Detected hourly rate $${currentSalary}/hr → annualized to $${effectiveSalary.toLocaleString()}` });
+    } else if (compensationType === 'hourly' && hourlyRate && hourlyRate > 0 && !effectiveSalary) {
+      // Explicit hourly rate column
       effectiveSalary = Math.round(hourlyRate * annualHours * 100) / 100;
       warnings.push({ row: rowNum, field: 'salary', message: `Auto-annualized hourly rate $${hourlyRate}/hr × ${annualHours}hrs = $${effectiveSalary.toLocaleString()}` });
     }
@@ -632,7 +641,12 @@ export async function importCompensationData(buffer: Buffer, sheetName?: string)
       // Only set compensation fields if the file actually has those columns
       if (hasSalaryData) {
         updateParts.push('current_salary = ?', 'hourly_rate = ?');
-        updateValues.push(effectiveSalary, hourlyRate);
+        updateValues.push(effectiveSalary, effectiveHourlyRate);
+        // If we auto-detected an hourly rate, also mark as hourly compensation type
+        if (effectiveHourlyRate && effectiveHourlyRate > 0 && effectiveHourlyRate < 200 && colCompType === -1) {
+          updateParts.push('compensation_type = ?');
+          updateValues.push('hourly');
+        }
       }
       if (colCompType !== -1) {
         updateParts.push('compensation_type = ?');
