@@ -56,7 +56,7 @@ interface EquityCalculationResult {
  * Prefers role_start_date (date entered current position) over hire_date (original hire).
  * Falls back to hire_date if role_start_date is not available.
  */
-function calculateYearsInRole(roleStartDate: string | null, hireDate: string | null): number | null {
+export function calculateYearsInRole(roleStartDate: string | null, hireDate: string | null): number | null {
   const dateStr = roleStartDate || hireDate;
   if (!dateStr) return null;
   
@@ -79,7 +79,7 @@ function calculateYearsInRole(roleStartDate: string | null, hireDate: string | n
  * The YOS adjustment means Year 1 employees should be at ~89.7% of median,
  * so they reach 100% by year 5 with 2.75% annual increases.
  */
-function calculateAdjustedMedian(
+export function calculateAdjustedMedian(
   baseMedian: number,
   appointmentMonths: number,
   fte: number,
@@ -121,7 +121,7 @@ function calculateAdjustedMedian(
  * If the employee has an explicit hourly_rate, use that × annual hours × FTE.
  * Otherwise, treat current_salary as already annualized.
  */
-function annualizeHourlyCompensation(
+export function annualizeHourlyCompensation(
   position: PositionForAnalysis,
   annualHours: number
 ): { annualizedSalary: number; note: string } | null {

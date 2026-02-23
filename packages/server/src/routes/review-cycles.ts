@@ -1,10 +1,12 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
+import * as XLSX from 'xlsx';
 import { dbAll, dbGet, dbRun, saveDatabase } from '../db/init.js';
 import { requireAuth, requireEditor, getDivisionFilter, type AuthenticatedRequest } from '../middleware/auth.js';
 import { BadRequestError, NotFoundError, ForbiddenError } from '../middleware/error-handler.js';
 import { getEquitySummaryByVp, calculateBudgetAllocation } from '../services/equity-calculator.js';
 import { generatePcReport } from '../services/pc-report-generator.js';
+import { emailVpCycleAssignment, emailHrVpReviewSubmitted } from '../services/email.js';
 import type { 
   EquityReviewCycleWithStats, 
   ReviewCycleStatus,
@@ -372,6 +374,34 @@ reviewCyclesRouter.post('/:id/send-to-vps', requireEditor, (req: Request, res: R
     WHERE id = ?
   `, [id]);
   
+  // Send email notifications to each assigned VP
+  const cycleInfo = dbGet<{ name: string; fiscal_year: string; deadline: string | null }>(
+    'SELECT name, fiscal_year, deadline FROM equity_review_cycles WHERE id = ?', [id]
+  );
+  if (cycleInfo) {
+    const sentVps = dbAll<{ vp_stem: string; allocated_budget: number | null }>(
+      `SELECT vp_stem, allocated_budget FROM vp_review_status WHERE ${whereClause} AND status = 'in_review'`,
+      params
+    );
+    for (const vp of sentVps) {
+      const vpRole = dbGet<{ title: string; assigned_email: string | null; assigned_name: string | null }>(
+        'SELECT title, assigned_email, assigned_name FROM vp_roles WHERE code = ?',
+        [vp.vp_stem]
+      );
+      if (vpRole?.assigned_email) {
+        emailVpCycleAssignment({
+          to: vpRole.assigned_email,
+          vpName: vpRole.assigned_name || vpRole.assigned_email,
+          vpTitle: vpRole.title,
+          cycleName: cycleInfo.name,
+          fiscalYear: cycleInfo.fiscal_year,
+          deadline: cycleInfo.deadline,
+          allocatedBudget: vp.allocated_budget,
+        }).catch(() => {});
+      }
+    }
+  }
+
   res.json({ 
     success: true, 
     message: `Sent review to ${result.changes} VP(s)`,
@@ -500,6 +530,28 @@ reviewCyclesRouter.post('/:cycleId/vp-approve', (req: Request, res: Response) =>
   }
   
   saveDatabase();
+
+  // Notify HR admins that this VP has submitted their review
+  const cycleForEmail = dbGet<{ name: string; fiscal_year: string }>(
+    'SELECT name, fiscal_year FROM equity_review_cycles WHERE id = ?', [cycleId]
+  );
+  const vpRoleForEmail = dbGet<{ title: string }>(
+    'SELECT title FROM vp_roles WHERE code = ?', [divisionFilter]
+  );
+  const hrAdmins = dbAll<{ email: string }>(
+    "SELECT email FROM users WHERE role IN ('system_admin','hr_admin','hr_analyst') AND is_active = 1"
+  );
+  if (cycleForEmail && hrAdmins.length > 0) {
+    emailHrVpReviewSubmitted({
+      hrEmails: hrAdmins.map(u => u.email),
+      vpName: authReq.user.email,
+      vpTitle: vpRoleForEmail?.title || divisionFilter,
+      cycleName: cycleForEmail.name,
+      fiscalYear: cycleForEmail.fiscal_year,
+      proposedTotal: proposedTotal?.total || 0,
+      cycleId: parseInt(cycleId),
+    }).catch(() => {});
+  }
   
   res.json({ 
     success: true, 
@@ -1213,4 +1265,86 @@ reviewCyclesRouter.post('/:id/ratify', requireEditor, (req: Request, res: Respon
   `, [notes || null, id]);
   
   res.json({ success: true, message: 'Equity plan ratified and ready for implementation' });
+});
+
+// Export completed cycle to Excel
+reviewCyclesRouter.get('/:id/export', requireEditor, (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const cycle = dbGet<Record<string, unknown>>(
+    'SELECT id, name, fiscal_year, total_budget, status FROM equity_review_cycles WHERE id = ?',
+    [id]
+  );
+  if (!cycle) throw new NotFoundError('Review cycle not found');
+
+  // VP-level summary sheet data
+  const vpRows = dbAll<Record<string, unknown>>(`
+    SELECT 
+      vrs.vp_stem,
+      vr.title as vp_title,
+      vrs.allocated_budget,
+      vrs.proposed_total,
+      vrs.employee_count,
+      vrs.status
+    FROM vp_review_status vrs
+    LEFT JOIN vp_roles vr ON vrs.vp_stem = vr.code
+    WHERE vrs.cycle_id = ?
+    ORDER BY vr.title
+  `, [id]);
+
+  // Employee-level detail sheet data
+  const detailRows = dbAll<Record<string, unknown>>(`
+    SELECT 
+      pm.employee_name        AS "Employee Name",
+      pm.employee_id          AS "Employee ID",
+      pm.institutional_title  AS "Title",
+      pm.division             AS "Division",
+      pm.department           AS "Department",
+      vr.title                AS "VP Division",
+      pm.current_salary       AS "Current Salary",
+      ea.equity_gap           AS "Equity Gap",
+      ea.proposed_raise       AS "Proposed Raise",
+      ea.actual_raise_given   AS "Actual Raise Given",
+      cp.title                AS "CUPA Title",
+      pm.cupa_code            AS "CUPA Code"
+    FROM position_mappings pm
+    LEFT JOIN vp_roles vr ON pm.vp_stem = vr.code
+    LEFT JOIN equity_analysis ea ON ea.position_mapping_id = pm.id AND ea.data_year = (
+      SELECT cupa_data_year FROM equity_review_cycles WHERE id = ?
+    )
+    LEFT JOIN cupa_positions cp ON pm.cupa_code = cp.cupa_code
+    WHERE pm.vp_stem IN (SELECT vp_stem FROM vp_review_status WHERE cycle_id = ?)
+    ORDER BY vr.title, pm.employee_name
+  `, [id, id]);
+
+  const wb = XLSX.utils.book_new();
+
+  // Summary sheet
+  const summaryData = vpRows.map(row => ({
+    'VP Division': (row.vp_title as string) || (row.vp_stem as string),
+    'Status': row.status as string,
+    'Employees': row.employee_count as number | null,
+    'Allocated Budget': row.allocated_budget as number | null,
+    'Proposed Total': row.proposed_total as number | null,
+  }));
+  // Add totals row
+  summaryData.push({
+    'VP Division': 'TOTAL',
+    'Status': '',
+    'Employees': summaryData.reduce((s, r) => s + (r['Employees'] || 0), 0),
+    'Allocated Budget': summaryData.reduce((s, r) => s + (r['Allocated Budget'] || 0), 0),
+    'Proposed Total': summaryData.reduce((s, r) => s + (r['Proposed Total'] || 0), 0),
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryData), 'Summary');
+
+  // Detail sheet
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detailRows), 'Employee Detail');
+
+  const safeName = (cycle.name as string).replace(/[^a-zA-Z0-9_-]/g, '_');
+  const filename = `Equity_Cycle_${safeName}_FY${cycle.fiscal_year}.xlsx`;
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(buffer);
 });

@@ -30,6 +30,12 @@ export function UsersPage() {
     vpRoleId: '',
   });
 
+  // Edit dialog state
+  const [editUser, setEditUser] = useState<User | null>(null);
+  const [editForm, setEditForm] = useState({ role: '', vpRoleId: '' });
+  const [isSaving, setIsSaving] = useState(false);
+  const [editError, setEditError] = useState('');
+
   const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
@@ -131,6 +137,44 @@ export function UsersPage() {
       // If error is about reassignment, the backend should handle it
       console.error('Failed to update VP role:', error);
       alert(error.message || 'Failed to update VP role');
+    }
+  }
+
+  function openEditDialog(user: User) {
+    const currentVpRole = getUserVpRole(user);
+    setEditUser(user);
+    setEditForm({
+      role: user.role,
+      vpRoleId: currentVpRole?.id.toString() || 'none',
+    });
+    setEditError('');
+  }
+
+  async function handleSaveEdit() {
+    if (!editUser) return;
+    setIsSaving(true);
+    setEditError('');
+    try {
+      await usersApi.update(editUser.id, { role: editForm.role as User['role'] });
+
+      const oldVpRole = getUserVpRole(editUser);
+      const newVpRoleId = editForm.vpRoleId !== 'none' ? parseInt(editForm.vpRoleId) : null;
+
+      // Clear old VP role assignment if changed
+      if (oldVpRole && oldVpRole.id !== newVpRoleId) {
+        await vpRolesApi.assign(oldVpRole.id, null, null);
+      }
+      // Set new VP role assignment
+      if (newVpRoleId && newVpRoleId !== oldVpRole?.id) {
+        await vpRolesApi.assign(newVpRoleId, editUser.email, editUser.name);
+      }
+
+      setEditUser(null);
+      loadData();
+    } catch (err: unknown) {
+      setEditError(err instanceof Error ? err.message : 'Failed to save changes');
+    } finally {
+      setIsSaving(false);
     }
   }
 
@@ -321,6 +365,9 @@ export function UsersPage() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => openEditDialog(user)}>
+                              Edit Role &amp; Division
+                            </DropdownMenuItem>
                             <DropdownMenuItem onClick={() => handleToggleActive(user)}>
                               {user.isActive ? 'Deactivate' : 'Activate'}
                             </DropdownMenuItem>
@@ -335,6 +382,64 @@ export function UsersPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Edit Role & Division Dialog */}
+      <Dialog open={!!editUser} onOpenChange={(open) => { if (!open) setEditUser(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit User — {editUser?.name}</DialogTitle>
+            <DialogDescription>{editUser?.email}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div>
+              <Label>Role</Label>
+              <Select value={editForm.role} onValueChange={(v) => setEditForm({ ...editForm, role: v, vpRoleId: 'none' })}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select role" />
+                </SelectTrigger>
+                <SelectContent>
+                  {Object.entries(USER_ROLES).map(([key, { label }]) => (
+                    <SelectItem key={key} value={key}>{label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {needsVpRole(editForm.role) && (
+              <div>
+                <Label>VP Division</Label>
+                <Select value={editForm.vpRoleId} onValueChange={(v) => setEditForm({ ...editForm, vpRoleId: v })}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select division" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">-- None --</SelectItem>
+                    {getVpRolesForDropdown(editUser ?? undefined).map((role) => (
+                      <SelectItem key={role.id} value={role.id.toString()}>
+                        {role.title}
+                        {role.isTaken ? ` (${role.assignedName || 'taken'})` : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground mt-1">
+                  This controls which division this user can review.
+                </p>
+              </div>
+            )}
+            {editError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded text-sm">
+                {editError}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditUser(null)}>Cancel</Button>
+            <Button onClick={handleSaveEdit} disabled={isSaving}>
+              {isSaving ? 'Saving…' : 'Save Changes'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

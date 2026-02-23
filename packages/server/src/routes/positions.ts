@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { dbAll, dbGet, dbRun } from '../db/init.js';
-import { requireAuth, requireEditor, getDivisionFilter, type AuthenticatedRequest } from '../middleware/auth.js';
+import { requireAuth, requireEditor, requireInstitutionWideAccess, getDivisionFilter, type AuthenticatedRequest } from '../middleware/auth.js';
 import { NotFoundError, ForbiddenError, BadRequestError } from '../middleware/error-handler.js';
 import type { PositionMapping, PositionMappingWithCupa, PaginatedResponse, AuditStatus, CompensationType } from '@cupa/shared';
 
@@ -192,6 +192,49 @@ positionsRouter.post('/', requireEditor, (req: Request, res: Response) => {
   `, [result.lastInsertRowid]);
 
   res.status(201).json(rowToPositionWithCupa(newPosition!));
+});
+
+const assignCupaSchema = z.object({
+  cupaCode: z.string().regex(/^\d{6}$/, 'CUPA code must be 6 digits').nullable(),
+});
+
+positionsRouter.patch('/:id/cupa-code', requireInstitutionWideAccess, (req: Request, res: Response) => {
+  const authReq = req as AuthenticatedRequest;
+  const positionId = parseInt(req.params.id);
+
+  const position = dbGet<{ id: number; cupa_code: string | null; vp_stem: string }>(
+    'SELECT id, cupa_code, vp_stem FROM position_mappings WHERE id = ?',
+    [positionId]
+  );
+  if (!position) throw new NotFoundError('Position not found');
+
+  const { cupaCode } = assignCupaSchema.parse(req.body);
+
+  if (cupaCode) {
+    const cupaExists = dbGet<{ cupa_code: string }>('SELECT cupa_code FROM cupa_positions WHERE cupa_code = ?', [cupaCode]);
+    if (!cupaExists) throw new BadRequestError(`Invalid CUPA code: ${cupaCode}`);
+  }
+
+  dbRun('UPDATE position_mappings SET cupa_code = ? WHERE id = ?', [cupaCode, positionId]);
+
+  dbRun(
+    `INSERT INTO mapping_history (position_mapping_id, user_id, old_cupa_code, new_cupa_code, notes)
+     VALUES (?, ?, ?, ?, ?)`,
+    [positionId, authReq.user.userId, position.cupa_code, cupaCode, 'CUPA code assigned via AI match']
+  );
+
+  const updated = dbGet<Record<string, unknown>>(`
+    SELECT pm.id, pm.employee_id, pm.cupa_code, pm.institutional_title, pm.employee_name, pm.division, pm.department, pm.supervisor,
+      pm.vp_stem, pm.audit_status, pm.assigned_reviewer_id, pm.review_date, pm.created_at,
+      pm.current_salary, pm.hire_date, pm.fte, pm.appointment_months, pm.compensation_type, pm.has_housing_benefit, pm.housing_value,
+      cp.title as cupa_title, cp.description as cupa_description, u.name as reviewer_name
+    FROM position_mappings pm
+    LEFT JOIN cupa_positions cp ON pm.cupa_code = cp.cupa_code
+    LEFT JOIN users u ON pm.assigned_reviewer_id = u.id
+    WHERE pm.id = ?
+  `, [positionId]);
+
+  res.json(rowToPositionWithCupa(updated!));
 });
 
 positionsRouter.get('/:id/history', (req: Request, res: Response) => {

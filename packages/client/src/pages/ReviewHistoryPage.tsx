@@ -8,7 +8,9 @@ import {
   Building2,
   Users,
   DollarSign,
-  Clock
+  Clock,
+  Download,
+  Loader2
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -65,6 +67,7 @@ export function ReviewHistoryPage() {
   const [cycles, setCycles] = useState<EquityReviewCycleWithStats[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [exportingId, setExportingId] = useState<number | null>(null);
 
   const isInstitutionWide = user && INSTITUTION_WIDE_ROLES.includes(user.role);
 
@@ -109,6 +112,18 @@ export function ReviewHistoryPage() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  async function handleExport(cycle: EquityReviewCycleWithStats) {
+    setExportingId(cycle.id);
+    try {
+      const safeName = cycle.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+      await reviewCyclesApi.exportExcel(cycle.id, `Equity_Cycle_${safeName}_FY${cycle.fiscalYear}.xlsx`);
+    } catch (err) {
+      console.error('Export failed:', err);
+    } finally {
+      setExportingId(null);
+    }
+  }
 
   if (isLoading) {
     return (
@@ -204,7 +219,21 @@ export function ReviewHistoryPage() {
                 </div>
               )}
 
-              <div className="flex justify-end">
+              <div className="flex justify-end gap-2">
+                {isInstitutionWide && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleExport(cycle)}
+                    disabled={exportingId === cycle.id}
+                  >
+                    {exportingId === cycle.id ? (
+                      <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Exporting…</>
+                    ) : (
+                      <><Download className="h-4 w-4 mr-2" />Export Excel</>
+                    )}
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"

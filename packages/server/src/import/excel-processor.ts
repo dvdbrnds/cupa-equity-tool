@@ -399,7 +399,7 @@ function parseBoolean(value: unknown): boolean {
   return ['yes', 'y', 'true', '1', 'x'].includes(str);
 }
 
-function parseCompensationType(value: unknown): 'salaried' | 'hourly' {
+export function parseCompensationType(value: unknown): 'salaried' | 'hourly' {
   if (!value) return 'salaried';
   const str = String(value).toLowerCase().trim();
   if (['hourly', 'non-exempt', 'nonexempt', 'h'].includes(str)) {
@@ -411,7 +411,7 @@ function parseCompensationType(value: unknown): 'salaried' | 'hourly' {
 /**
  * Normalize a name for fuzzy matching: lowercase, strip extra whitespace, remove suffixes
  */
-function normalizeName(name: string): string {
+export function normalizeName(name: string): string {
   return name.toLowerCase().replace(/\s+/g, ' ').trim()
     .replace(/\s+(jr\.?|sr\.?|ii|iii|iv)$/i, '');
 }

@@ -65,13 +65,9 @@ authRouter.post('/login', (req: Request, res: Response) => {
   const forwardedProto = req.headers['x-forwarded-proto'];
   const isSecure = forwardedProto === 'https' || req.secure;
   
-  // TEMP: Allow non-secure cookies for dev until proper domain is configured
-  // TODO: Remove ALLOW_INSECURE_COOKIES env var once cupa.moravian.edu has SSL
-  const useSecureCookie = process.env.ALLOW_INSECURE_COOKIES === 'true' ? false : isSecure;
-  
   res.cookie('token', token, {
     httpOnly: true,
-    secure: useSecureCookie,
+    secure: isSecure,
     sameSite: 'lax',
     maxAge: 8 * 60 * 60 * 1000, // 8 hours
   });
@@ -208,11 +204,10 @@ authRouter.post(
 
         const forwardedProto = req.headers['x-forwarded-proto'];
         const isSecure = forwardedProto === 'https' || req.secure;
-        const useSecureCookie = process.env.ALLOW_INSECURE_COOKIES === 'true' ? false : isSecure;
 
         res.cookie('token', token, {
           httpOnly: true,
-          secure: useSecureCookie,
+          secure: isSecure,
           sameSite: 'lax',
           maxAge: 8 * 60 * 60 * 1000,
         });

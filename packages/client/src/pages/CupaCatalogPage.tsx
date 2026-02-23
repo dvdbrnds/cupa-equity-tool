@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Search, ChevronLeft, ChevronRight, BookOpen, Sparkles, Loader2, AlertCircle } from 'lucide-react';
+import { Search, ChevronLeft, ChevronRight, BookOpen, Sparkles, Loader2, AlertCircle, CheckCircle2, UserCheck } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -8,11 +8,24 @@ import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { LoadingSpinner } from '@/components/ui/loading-spinner';
-import { cupaCatalogApi } from '@/services/api';
-import type { CupaPosition, PaginatedResponse, AiCupaMatch } from '@cupa/shared';
+import { cupaCatalogApi, positionsApi } from '@/services/api';
+import type { CupaPosition, PaginatedResponse, AiCupaMatch, PositionMappingWithCupa } from '@cupa/shared';
+import { INSTITUTION_WIDE_ROLES } from '@cupa/shared';
 import { debounce } from '@/lib/utils';
+import { useAuth } from '@/context/AuthContext';
 
 type ActiveTab = 'browse' | 'ai-match';
+
+interface AssignDialogState {
+  match: AiCupaMatch;
+  positionSearch: string;
+  positions: PositionMappingWithCupa[];
+  positionsLoading: boolean;
+  selectedPosition: PositionMappingWithCupa | null;
+  assigning: boolean;
+  success: string | null;
+  error: string | null;
+}
 
 function ScoreBadge({ score }: { score: number }) {
   if (score >= 80) {
@@ -25,6 +38,9 @@ function ScoreBadge({ score }: { score: number }) {
 }
 
 export function CupaCatalogPage() {
+  const { user } = useAuth();
+  const isHrRole = user && INSTITUTION_WIDE_ROLES.includes(user.role);
+
   const [activeTab, setActiveTab] = useState<ActiveTab>('browse');
 
   // Browse tab state
@@ -41,6 +57,9 @@ export function CupaCatalogPage() {
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiSelectedPosition, setAiSelectedPosition] = useState<CupaPosition | null>(null);
   const [aiDetailLoading, setAiDetailLoading] = useState(false);
+
+  // Assign to Position dialog state
+  const [assignDialog, setAssignDialog] = useState<AssignDialogState | null>(null);
 
   const loadPositions = useCallback(async () => {
     setIsLoading(true);
@@ -95,7 +114,6 @@ export function CupaCatalogPage() {
       const pos = await cupaCatalogApi.get(match.cupaCode);
       setAiSelectedPosition(pos);
     } catch {
-      // Fall back to constructing from match data
       setAiSelectedPosition({
         cupaCode: match.cupaCode,
         title: match.title,
@@ -108,6 +126,49 @@ export function CupaCatalogPage() {
       });
     } finally {
       setAiDetailLoading(false);
+    }
+  }
+
+  function openAssignDialog(match: AiCupaMatch) {
+    setAssignDialog({
+      match,
+      positionSearch: '',
+      positions: [],
+      positionsLoading: false,
+      selectedPosition: null,
+      assigning: false,
+      success: null,
+      error: null,
+    });
+  }
+
+  const debouncedPositionSearch = useCallback(
+    debounce(async (search: string) => {
+      if (!assignDialog) return;
+      setAssignDialog(prev => prev ? { ...prev, positionsLoading: true, positions: [] } : null);
+      try {
+        const result = await positionsApi.list({ search: search || undefined, limit: 20 });
+        setAssignDialog(prev => prev ? { ...prev, positions: result.data, positionsLoading: false } : null);
+      } catch {
+        setAssignDialog(prev => prev ? { ...prev, positionsLoading: false } : null);
+      }
+    }, 300),
+    [assignDialog?.match.cupaCode]
+  );
+
+  async function handleAssignConfirm() {
+    if (!assignDialog?.selectedPosition) return;
+    setAssignDialog(prev => prev ? { ...prev, assigning: true, error: null } : null);
+    try {
+      await positionsApi.assignCupaCode(assignDialog.selectedPosition.id, assignDialog.match.cupaCode);
+      setAssignDialog(prev => prev ? {
+        ...prev,
+        assigning: false,
+        success: `CUPA code ${assignDialog.match.cupaCode} assigned to ${assignDialog.selectedPosition!.employeeName}`,
+      } : null);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Assignment failed';
+      setAssignDialog(prev => prev ? { ...prev, assigning: false, error: message } : null);
     }
   }
 
@@ -343,15 +404,25 @@ export function CupaCatalogPage() {
                           <p className="text-xs text-muted-foreground italic">{match.reasoning}</p>
                         </div>
                       </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="flex-shrink-0"
-                        disabled={aiDetailLoading}
-                        onClick={() => handleViewDetails(match)}
-                      >
-                        Details
-                      </Button>
+                      <div className="flex flex-col gap-1.5 flex-shrink-0">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={aiDetailLoading}
+                          onClick={() => handleViewDetails(match)}
+                        >
+                          Details
+                        </Button>
+                        {isHrRole && (
+                          <Button
+                            size="sm"
+                            onClick={() => openAssignDialog(match)}
+                          >
+                            <UserCheck className="h-3.5 w-3.5 mr-1.5" />
+                            Assign
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -410,6 +481,93 @@ export function CupaCatalogPage() {
                 </div>
               </div>
             </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Assign to Position Dialog */}
+      <Dialog open={!!assignDialog} onOpenChange={(open) => { if (!open) setAssignDialog(null); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Assign CUPA Code to Position</DialogTitle>
+            <DialogDescription>
+              Assign <span className="font-mono font-semibold">{assignDialog?.match.cupaCode}</span> — {assignDialog?.match.title}
+            </DialogDescription>
+          </DialogHeader>
+
+          {assignDialog?.success ? (
+            <div className="py-4 flex flex-col items-center gap-3 text-center">
+              <CheckCircle2 className="h-10 w-10 text-green-500" />
+              <p className="font-medium text-green-800">{assignDialog.success}</p>
+              <Button onClick={() => setAssignDialog(null)}>Done</Button>
+            </div>
+          ) : (
+            <div className="space-y-4 py-2">
+              <div>
+                <label className="text-sm font-medium mb-1.5 block">Search for a position</label>
+                <Input
+                  placeholder="Search by name, title, or employee ID..."
+                  value={assignDialog?.positionSearch ?? ''}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setAssignDialog(prev => prev ? { ...prev, positionSearch: val, selectedPosition: null } : null);
+                    debouncedPositionSearch(val);
+                  }}
+                  autoFocus
+                />
+              </div>
+
+              {assignDialog?.positionsLoading && (
+                <div className="flex justify-center py-4">
+                  <LoadingSpinner size="sm" />
+                </div>
+              )}
+
+              {!assignDialog?.positionsLoading && assignDialog?.positions && assignDialog.positions.length > 0 && (
+                <div className="border rounded-md divide-y max-h-56 overflow-y-auto">
+                  {assignDialog.positions.map((pos) => (
+                    <button
+                      key={pos.id}
+                      className={`w-full text-left px-3 py-2.5 text-sm hover:bg-muted/50 transition-colors ${
+                        assignDialog.selectedPosition?.id === pos.id ? 'bg-primary/10 border-l-2 border-primary' : ''
+                      }`}
+                      onClick={() => setAssignDialog(prev => prev ? { ...prev, selectedPosition: pos } : null)}
+                    >
+                      <div className="font-medium">{pos.employeeName}</div>
+                      <div className="text-muted-foreground text-xs">{pos.institutionalTitle} · {pos.division}</div>
+                      {pos.cupaCode && (
+                        <div className="text-xs text-amber-600 mt-0.5">Currently mapped to {pos.cupaCode}</div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {!assignDialog?.positionsLoading && assignDialog?.positionSearch && assignDialog.positions.length === 0 && (
+                <p className="text-sm text-muted-foreground text-center py-3">No positions found</p>
+              )}
+
+              {assignDialog?.error && (
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>{assignDialog.error}</AlertDescription>
+                </Alert>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button variant="outline" onClick={() => setAssignDialog(null)}>Cancel</Button>
+                <Button
+                  disabled={!assignDialog?.selectedPosition || assignDialog.assigning}
+                  onClick={handleAssignConfirm}
+                >
+                  {assignDialog?.assigning ? (
+                    <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Assigning…</>
+                  ) : (
+                    <>Confirm Assignment</>
+                  )}
+                </Button>
+              </div>
+            </div>
           )}
         </DialogContent>
       </Dialog>

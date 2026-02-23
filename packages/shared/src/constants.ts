@@ -38,7 +38,7 @@ export const INSTITUTION_WIDE_ROLES: UserRole[] = ['system_admin', 'hr_admin', '
 export const EDITOR_ROLES: UserRole[] = ['system_admin', 'hr_admin'];
 
 // Roles that can manage users
-export const USER_MANAGEMENT_ROLES: UserRole[] = ['system_admin'];
+export const USER_MANAGEMENT_ROLES: UserRole[] = ['system_admin', 'hr_admin'];
 
 // ============================================================================
 // Audit Status

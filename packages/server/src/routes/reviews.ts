@@ -5,6 +5,7 @@ import { requireAuth, getDivisionFilter, type AuthenticatedRequest } from '../mi
 import { NotFoundError, ForbiddenError, BadRequestError } from '../middleware/error-handler.js';
 import type { PositionMappingWithCupa, ReviewCommentWithUser, PaginatedResponse, AuditStatus } from '@cupa/shared';
 import { INSTITUTION_WIDE_ROLES } from '@cupa/shared';
+import { emailHrPositionFlagged } from '../services/email.js';
 
 export const reviewsRouter = Router();
 reviewsRouter.use(requireAuth);
@@ -155,6 +156,25 @@ reviewsRouter.patch('/:id/flag', (req: Request, res: Response) => {
     [positionId, authReq.user.userId, position.audit_status, data.comment]);
   dbRun(`INSERT INTO review_comments (position_mapping_id, user_id, comment, flag_reason, suggested_cupa_code) VALUES (?, ?, ?, ?, ?)`,
     [positionId, authReq.user.userId, data.comment, data.reason, data.suggestedCupaCode || null]);
+
+  // Notify HR admins
+  const posDetails = dbGet<{ employee_name: string; institutional_title: string }>(
+    'SELECT employee_name, institutional_title FROM position_mappings WHERE id = ?', [positionId]
+  );
+  const hrAdmins = dbAll<{ email: string }>(
+    "SELECT email FROM users WHERE role IN ('system_admin','hr_admin','hr_analyst') AND is_active = 1"
+  );
+  if (posDetails && hrAdmins.length > 0) {
+    emailHrPositionFlagged({
+      hrEmails: hrAdmins.map(u => u.email),
+      positionName: posDetails.employee_name,
+      positionTitle: posDetails.institutional_title,
+      vpName: authReq.user.email,
+      reason: data.reason,
+      suggestedCupaCode: data.suggestedCupaCode || null,
+      positionId,
+    }).catch(() => {});
+  }
 
   res.json({ message: 'Position flagged successfully' });
 });

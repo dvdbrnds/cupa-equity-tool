@@ -183,6 +183,12 @@ export const positionsApi = {
     createdAt: string;
     userName: string;
   }>>(`/positions/${id}/history`),
+
+  assignCupaCode: (id: number, cupaCode: string | null) =>
+    fetchApi<PositionMappingWithCupa>(`/positions/${id}/cupa-code`, {
+      method: 'PATCH',
+      body: JSON.stringify({ cupaCode }),
+    }),
 };
 
 // Audit Cycles API
@@ -842,4 +848,23 @@ export const reviewCyclesApi = {
       `/review-cycles/${cycleId}/ratify`,
       { method: 'POST', body: JSON.stringify({ notes }) }
     ),
+
+  exportExcel: async (id: number, filename?: string): Promise<void> => {
+    const response = await fetch(`${API_BASE}/review-cycles/${id}/export`, {
+      credentials: 'include',
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({ message: 'Export failed' }));
+      throw new Error(err.message || 'Export failed');
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || `equity-cycle-${id}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  },
 };
