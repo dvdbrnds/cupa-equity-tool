@@ -1,9 +1,10 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
+import OpenAI from 'openai';
 import { dbAll, dbGet, dbRun } from '../db/init.js';
 import { requireAuth, requireEditor } from '../middleware/auth.js';
 import { NotFoundError, BadRequestError } from '../middleware/error-handler.js';
-import type { CupaPosition, PaginatedResponse } from '@cupa/shared';
+import type { CupaPosition, PaginatedResponse, AiCupaMatch } from '@cupa/shared';
 
 export const cupaCatalogRouter = Router();
 
@@ -107,6 +108,119 @@ cupaCatalogRouter.get('/:code', (req: Request, res: Response) => {
 
   if (!row) throw new NotFoundError('CUPA position not found');
   res.json(rowToCupaPosition(row));
+});
+
+const aiMatchSchema = z.object({
+  query: z.string().min(2, 'Query must be at least 2 characters').max(2000, 'Query must be 2000 characters or less'),
+});
+
+cupaCatalogRouter.post('/ai-match', async (req: Request, res: Response) => {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    res.status(503).json({
+      error: 'AI matching is not configured. Contact your administrator to set up an OpenAI API key.',
+    });
+    return;
+  }
+
+  const { query } = aiMatchSchema.parse(req.body);
+
+  const rows = dbAll<{ cupa_code: string; title: string; description: string | null; population_type: string }>(`
+    SELECT cupa_code, title, description, population_type
+    FROM cupa_positions
+    ORDER BY cupa_code ASC
+  `);
+
+  const catalogList = rows
+    .map((r, i) => `${i + 1}. [${r.cupa_code}] ${r.title}${r.description ? ` — ${r.description.slice(0, 120)}` : ''}`)
+    .join('\n');
+
+  const systemPrompt = `You are an expert in higher education HR classification using the CUPA-HR position catalog.
+Your task is to find the best CUPA position matches for a given job title or job description.
+
+Here is the full CUPA position catalog (code, title, and abbreviated description):
+${catalogList}
+
+Return ONLY a valid JSON object with this exact structure, no markdown, no explanation outside the JSON:
+{
+  "matches": [
+    {
+      "cupaCode": "string (6-digit CUPA code)",
+      "score": number (0-100, where 100 is a perfect match),
+      "reasoning": "string (one sentence explaining why this is a good match)"
+    }
+  ]
+}
+
+Return the top 5 best matches ordered by score descending. Only include matches with a score of 30 or higher.`;
+
+  const openai = new OpenAI({ apiKey });
+
+  let raw: string;
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `Find the best CUPA matches for: "${query}"` },
+      ],
+      temperature: 0.1,
+      response_format: { type: 'json_object' },
+    });
+    raw = completion.choices[0]?.message?.content ?? '{}';
+  } catch (err: unknown) {
+    const status = (err as { status?: number })?.status;
+    const code = (err as { code?: string })?.code;
+    if (status === 429 || code === 'insufficient_quota') {
+      res.status(402).json({
+        error: 'The OpenAI account has exceeded its quota. Please add billing credits at platform.openai.com and try again.',
+      });
+      return;
+    }
+    if (status === 401) {
+      res.status(503).json({
+        error: 'The OpenAI API key is invalid. Contact your administrator.',
+      });
+      return;
+    }
+    res.status(502).json({
+      error: 'AI matching is temporarily unavailable. Please try again in a moment.',
+    });
+    return;
+  }
+  let parsed: { matches?: Array<{ cupaCode: string; score: number; reasoning: string }> };
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = { matches: [] };
+  }
+
+  const matchCodes = (parsed.matches ?? []).map(m => m.cupaCode);
+  const positionRows = matchCodes.length > 0
+    ? dbAll<{ cupa_code: string; title: string; description: string | null; population_type: string }>(
+        `SELECT cupa_code, title, description, population_type FROM cupa_positions WHERE cupa_code IN (${matchCodes.map(() => '?').join(',')})`,
+        matchCodes
+      )
+    : [];
+
+  const positionMap = new Map(positionRows.map(r => [r.cupa_code, r]));
+
+  const enrichedMatches: AiCupaMatch[] = (parsed.matches ?? [])
+    .filter(m => positionMap.has(m.cupaCode))
+    .map(m => {
+      const pos = positionMap.get(m.cupaCode)!;
+      return {
+        cupaCode: pos.cupa_code,
+        title: pos.title,
+        description: pos.description,
+        populationType: pos.population_type as AiCupaMatch['populationType'],
+        score: Math.min(100, Math.max(0, Math.round(m.score))),
+        reasoning: m.reasoning,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  res.json({ matches: enrichedMatches });
 });
 
 const createCupaSchema = z.object({

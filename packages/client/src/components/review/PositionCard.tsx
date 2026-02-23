@@ -1,11 +1,13 @@
+import { useState, useEffect } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { SalaryRangeBar } from '@/components/ui/salary-range-bar';
 import { MultiGroupSalaryBars } from '@/components/ui/multi-group-salary-bars';
-import { Equal } from 'lucide-react';
+import { Equal, History, TrendingUp, Info } from 'lucide-react';
 import type { EquityAnalysisWithPosition } from '@cupa/shared';
+import { equityAnalysisApi } from '@/services/api';
 
 function formatCurrency(value: number | null | undefined): string {
   if (value === null || value === undefined) return '-';
@@ -14,6 +16,14 @@ function formatCurrency(value: number | null | undefined): string {
     currency: 'USD',
     maximumFractionDigits: 0,
   }).format(value);
+}
+
+interface SalaryHistoryRecord {
+  dataYear: string;
+  currentSalary: number | null;
+  equityGap: number | null;
+  proposedRaise: number | null;
+  actualRaiseGiven: number | null;
 }
 
 interface PositionCardProps {
@@ -35,6 +45,10 @@ export function PositionCard({
   onRaiseBlur,
   feedbackSlot,
 }: PositionCardProps) {
+  const [history, setHistory] = useState<SalaryHistoryRecord[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
   const percentOfMedian =
     pos.currentSalary && pos.adjustedMedian
       ? (pos.currentSalary / pos.adjustedMedian) * 100
@@ -45,6 +59,40 @@ export function PositionCard({
     pos.currentSalary && effectiveRaise > 0 ? pos.currentSalary + effectiveRaise : pos.currentSalary;
   const remainingGap =
     pos.equityGap !== null && effectiveRaise > 0 ? pos.equityGap - effectiveRaise : pos.equityGap;
+
+  // Calculate total previous raises
+  const totalPreviousRaises = history.reduce((sum, h) => {
+    return sum + (h.actualRaiseGiven || 0);
+  }, 0);
+
+  // Categorize prior adjustments
+  const hasSignificantPriorRaise = history.some(h => 
+    h.actualRaiseGiven && h.actualRaiseGiven > 5000
+  );
+  
+  const hasModestPriorRaise = !hasSignificantPriorRaise && history.some(h =>
+    h.actualRaiseGiven && h.actualRaiseGiven > 0
+  );
+  
+  const mostRecentRaise = history.length > 0 ? history[0] : null;
+
+  async function loadHistory() {
+    if (history.length > 0) return; // Already loaded
+    setHistoryLoading(true);
+    try {
+      const data = await equityAnalysisApi.getEmployeeHistory(pos.employeeId);
+      setHistory(data);
+    } catch (err) {
+      console.error('Failed to load employee history:', err);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  // Auto-load history when card is rendered (for VP context)
+  useEffect(() => {
+    loadHistory();
+  }, [pos.employeeId]);
 
   return (
     <Card
@@ -57,6 +105,73 @@ export function PositionCard({
       }
     >
       <CardContent className="p-4">
+        {/* Prior Raise Alert Banner - Significant (>$5k) */}
+        {hasSignificantPriorRaise && (
+          <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded-md flex items-start gap-2">
+            <Info className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-medium text-amber-900">
+                  Prior Equity Adjustments: {formatCurrency(totalPreviousRaises)}
+                </p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-xs text-amber-700 hover:text-amber-900"
+                  onClick={() => setShowHistory(!showHistory)}
+                >
+                  {showHistory ? 'Hide' : 'Show'} History
+                </Button>
+              </div>
+              {showHistory && history.length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {history.map((h, idx) => (
+                    h.actualRaiseGiven && h.actualRaiseGiven > 0 ? (
+                      <div key={idx} className="flex items-center justify-between text-xs text-amber-800">
+                        <span className="font-medium">{h.dataYear}:</span>
+                        <span className="flex items-center gap-1">
+                          <TrendingUp className="h-3 w-3" />
+                          {formatCurrency(h.actualRaiseGiven)}
+                        </span>
+                      </div>
+                    ) : null
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Prior Raise Info Badge - Modest (<$5k) - More subtle */}
+        {hasModestPriorRaise && (
+          <div className="mb-3 flex items-center gap-2">
+            <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-200">
+              <History className="h-3 w-3 mr-1" />
+              Prior raise: {formatCurrency(totalPreviousRaises)}
+            </Badge>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-5 px-2 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => setShowHistory(!showHistory)}
+            >
+              {showHistory ? 'Hide' : 'Details'}
+            </Button>
+            {showHistory && history.length > 0 && (
+              <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                {history.map((h, idx) => (
+                  h.actualRaiseGiven && h.actualRaiseGiven > 0 ? (
+                    <span key={idx} className="flex items-center gap-1">
+                      <span className="font-medium">{h.dataYear}:</span>
+                      {formatCurrency(h.actualRaiseGiven)}
+                    </span>
+                  ) : null
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="grid grid-cols-12 gap-4 items-center">
           {/* Employee Info - 3 cols */}
           <div className="col-span-3">

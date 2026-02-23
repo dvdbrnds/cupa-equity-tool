@@ -2,6 +2,7 @@ import type {
   User,
   AuthSession,
   CupaPosition,
+  AiCupaMatchResponse,
   PositionMappingWithCupa,
   AuditCycleWithStats,
   ReviewCommentWithUser,
@@ -51,7 +52,7 @@ async function fetchApi<T>(
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ message: 'Request failed' }));
-    throw new ApiError(error.message || 'Request failed', response.status, error.code);
+    throw new ApiError(error.message || error.error || 'Request failed', response.status, error.code);
   }
 
   return response.json();
@@ -125,6 +126,12 @@ export const cupaCatalogApi = {
   getCategories: () => fetchApi<Array<{ category: string; count: number }>>('/cupa-catalog/categories/list'),
 
   getYears: () => fetchApi<Array<{ year: string; count: number }>>('/cupa-catalog/years/list'),
+
+  aiMatch: (query: string) =>
+    fetchApi<AiCupaMatchResponse>('/cupa-catalog/ai-match', {
+      method: 'POST',
+      body: JSON.stringify({ query }),
+    }),
 };
 
 // Positions API
@@ -609,8 +616,10 @@ export const vpRolesApi = {
 // Review Cycles API (Equity Review Workflow)
 export const reviewCyclesApi = {
   // Cycle management
-  list: (includeArchived = false) =>
-    fetchApi<EquityReviewCycleWithStats[]>(`/review-cycles?includeArchived=${includeArchived}`),
+  list: (params?: { includeArchived?: boolean }) => {
+    const includeArchived = params?.includeArchived || false;
+    return fetchApi<EquityReviewCycleWithStats[]>(`/review-cycles?includeArchived=${includeArchived}`);
+  },
 
   get: (id: number) =>
     fetchApi<{

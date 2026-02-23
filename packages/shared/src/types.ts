@@ -59,6 +59,19 @@ export interface CupaPosition {
   catalogYear: string;
 }
 
+export interface AiCupaMatch {
+  cupaCode: string;
+  title: string;
+  description: string | null;
+  populationType: CupaPopulationType;
+  score: number;
+  reasoning: string;
+}
+
+export interface AiCupaMatchResponse {
+  matches: AiCupaMatch[];
+}
+
 // ============================================================================
 // Position Mapping Types
 // ============================================================================
