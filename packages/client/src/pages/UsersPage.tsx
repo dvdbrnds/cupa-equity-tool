@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Plus, Search, MoreHorizontal } from 'lucide-react';
+import { Plus, Search, MoreHorizontal, Building2 } from 'lucide-react';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,6 +13,7 @@ import { usersApi, vpRolesApi } from '@/services/api';
 import type { User, PaginatedResponse, VpRole } from '@cupa/shared';
 import { USER_ROLES } from '@cupa/shared';
 import { debounce } from '@/lib/utils';
+import { Link } from 'react-router-dom';
 
 export function UsersPage() {
   const [users, setUsers] = useState<PaginatedResponse<User> | null>(null);
@@ -27,12 +28,10 @@ export function UsersPage() {
     password: '',
     name: '',
     role: '',
-    vpRoleId: '',
   });
 
-  // Edit dialog state
   const [editUser, setEditUser] = useState<User | null>(null);
-  const [editForm, setEditForm] = useState({ role: '', vpRoleId: '' });
+  const [editRole, setEditRole] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [editError, setEditError] = useState('');
 
@@ -61,31 +60,17 @@ export function UsersPage() {
     []
   );
 
-  // Find which VP role a user is assigned to (by matching email)
   function getUserVpRole(user: User): VpRole | undefined {
     return vpRoles.find(r => r.assignedEmail?.toLowerCase() === user.email.toLowerCase());
   }
 
   async function handleCreate() {
     setCreateError('');
-    
-    if (!newUser.name.trim()) {
-      setCreateError('Name is required');
-      return;
-    }
-    if (!newUser.email.trim()) {
-      setCreateError('Email is required');
-      return;
-    }
-    if (!newUser.password || newUser.password.length < 6) {
-      setCreateError('Password must be at least 6 characters');
-      return;
-    }
-    if (!newUser.role) {
-      setCreateError('Role is required');
-      return;
-    }
-    
+    if (!newUser.name.trim()) { setCreateError('Name is required'); return; }
+    if (!newUser.email.trim()) { setCreateError('Email is required'); return; }
+    if (!newUser.password || newUser.password.length < 6) { setCreateError('Password must be at least 6 characters'); return; }
+    if (!newUser.role) { setCreateError('Role is required'); return; }
+
     setIsCreating(true);
     try {
       await usersApi.create({
@@ -94,17 +79,11 @@ export function UsersPage() {
         name: newUser.name,
         role: newUser.role,
       });
-      
-      // If VP role selected, assign this user's email to that role
-      if (newUser.vpRoleId) {
-        await vpRolesApi.assign(parseInt(newUser.vpRoleId), newUser.email, newUser.name);
-      }
-      
       setShowCreateDialog(false);
-      setNewUser({ email: '', password: '', name: '', role: '', vpRoleId: '' });
+      setNewUser({ email: '', password: '', name: '', role: '' });
       loadData();
-    } catch (error: any) {
-      setCreateError(error.message || 'Failed to create user');
+    } catch (error: unknown) {
+      setCreateError(error instanceof Error ? error.message : 'Failed to create user');
     } finally {
       setIsCreating(false);
     }
@@ -119,34 +98,9 @@ export function UsersPage() {
     }
   }
 
-  async function handleVpRoleChange(user: User, vpRoleId: string) {
-    try {
-      // Clear old assignment if user was assigned to a different role
-      const oldRole = getUserVpRole(user);
-      if (oldRole && oldRole.id.toString() !== vpRoleId) {
-        await vpRolesApi.assign(oldRole.id, null, null);
-      }
-      
-      // Set new assignment (this will also clear any existing assignment on that role)
-      if (vpRoleId && vpRoleId !== 'none') {
-        await vpRolesApi.assign(parseInt(vpRoleId), user.email, user.name);
-      }
-      
-      loadData();
-    } catch (error: any) {
-      // If error is about reassignment, the backend should handle it
-      console.error('Failed to update VP role:', error);
-      alert(error.message || 'Failed to update VP role');
-    }
-  }
-
   function openEditDialog(user: User) {
-    const currentVpRole = getUserVpRole(user);
     setEditUser(user);
-    setEditForm({
-      role: user.role,
-      vpRoleId: currentVpRole?.id.toString() || 'none',
-    });
+    setEditRole(user.role);
     setEditError('');
   }
 
@@ -155,20 +109,7 @@ export function UsersPage() {
     setIsSaving(true);
     setEditError('');
     try {
-      await usersApi.update(editUser.id, { role: editForm.role as User['role'] });
-
-      const oldVpRole = getUserVpRole(editUser);
-      const newVpRoleId = editForm.vpRoleId !== 'none' ? parseInt(editForm.vpRoleId) : null;
-
-      // Clear old VP role assignment if changed
-      if (oldVpRole && oldVpRole.id !== newVpRoleId) {
-        await vpRolesApi.assign(oldVpRole.id, null, null);
-      }
-      // Set new VP role assignment
-      if (newVpRoleId && newVpRoleId !== oldVpRole?.id) {
-        await vpRolesApi.assign(newVpRoleId, editUser.email, editUser.name);
-      }
-
+      await usersApi.update(editUser.id, { role: editRole as User['role'] });
       setEditUser(null);
       loadData();
     } catch (err: unknown) {
@@ -178,24 +119,14 @@ export function UsersPage() {
     }
   }
 
-  // Get all VP roles, marking which ones are taken
-  function getVpRolesForDropdown(currentUser?: User): Array<VpRole & { isTaken: boolean }> {
-    return vpRoles.map(r => ({
-      ...r,
-      isTaken: !!(r.assignedEmail && 
-        (!currentUser || r.assignedEmail.toLowerCase() !== currentUser.email.toLowerCase()))
-    }));
-  }
-
-  const needsVpRole = (role: string) => ['vp_reviewer', 'academic_dean'].includes(role);
-
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Users</h1>
           <p className="text-muted-foreground">
-            Manage all user accounts - HR staff and VP reviewers
+            Manage HR staff accounts and roles
           </p>
         </div>
         <Dialog open={showCreateDialog} onOpenChange={(open) => { setShowCreateDialog(open); if (open) setCreateError(''); }}>
@@ -208,7 +139,9 @@ export function UsersPage() {
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Create User</DialogTitle>
-              <DialogDescription>Add a new user to the system</DialogDescription>
+              <DialogDescription>
+                Add a new HR staff account. For VP reviewers, use VP Divisions to assign their email instead.
+              </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div>
@@ -236,7 +169,7 @@ export function UsersPage() {
               </div>
               <div>
                 <Label>Role</Label>
-                <Select value={newUser.role} onValueChange={(v) => setNewUser({ ...newUser, role: v, vpRoleId: '' })}>
+                <Select value={newUser.role} onValueChange={(v) => setNewUser({ ...newUser, role: v })}>
                   <SelectTrigger>
                     <SelectValue placeholder="Select role" />
                   </SelectTrigger>
@@ -247,28 +180,6 @@ export function UsersPage() {
                   </SelectContent>
                 </Select>
               </div>
-              {needsVpRole(newUser.role) && (
-                <div>
-                  <Label>VP Division</Label>
-                  <Select value={newUser.vpRoleId || 'none'} onValueChange={(v) => setNewUser({ ...newUser, vpRoleId: v === 'none' ? '' : v })}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select VP division" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">-- Select Division --</SelectItem>
-                      {getVpRolesForDropdown().map((role) => (
-                        <SelectItem key={role.id} value={role.id.toString()}>
-                          {role.title} ({role.positionCount} positions)
-                          {role.isTaken && role.assignedName ? ` - ${role.assignedName}` : ''}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Selecting a division already assigned will reassign it to this user.
-                  </p>
-                </div>
-              )}
             </div>
             {createError && (
               <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded text-sm">
@@ -285,6 +196,20 @@ export function UsersPage() {
         </Dialog>
       </div>
 
+      {/* VP note */}
+      <div className="flex items-start gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
+        <Building2 className="h-5 w-5 text-blue-600 shrink-0 mt-0.5" />
+        <div>
+          <p className="text-sm font-medium text-blue-800">VP reviewer access is managed in VP Divisions</p>
+          <p className="text-xs text-blue-700 mt-0.5">
+            To give a VP reviewer access to their division, go to{' '}
+            <Link to="/vp-roles" className="underline font-medium">VP Divisions</Link>
+            {' '}and enter their Okta email on the division card. No account creation needed.
+          </p>
+        </div>
+      </div>
+
+      {/* User table */}
       <Card>
         <CardHeader>
           <div className="flex items-center gap-4">
@@ -323,33 +248,17 @@ export function UsersPage() {
                   return (
                     <tr key={user.id} className="border-b hover:bg-muted/50">
                       <td className="py-3 px-4 font-medium">{user.name}</td>
-                      <td className="py-3 px-4">{user.email}</td>
+                      <td className="py-3 px-4 text-sm text-muted-foreground">{user.email}</td>
                       <td className="py-3 px-4">
                         <Badge variant="secondary">
                           {USER_ROLES[user.role]?.label || user.role}
                         </Badge>
                       </td>
-                      <td className="py-3 px-4">
-                        {needsVpRole(user.role) ? (
-                          <Select 
-                            value={userVpRole?.id.toString() || 'none'} 
-                            onValueChange={(v) => handleVpRoleChange(user, v === 'none' ? '' : v)}
-                          >
-                            <SelectTrigger className="w-[220px]">
-                              <SelectValue placeholder="Select division" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="none">-- None --</SelectItem>
-                              {getVpRolesForDropdown(user).map((role) => (
-                                <SelectItem key={role.id} value={role.id.toString()}>
-                                  {role.title}
-                                  {role.isTaken ? ` (${role.assignedName || 'taken'})` : ''}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
+                      <td className="py-3 px-4 text-sm">
+                        {userVpRole ? (
+                          <span className="text-green-700 font-medium">{userVpRole.title}</span>
                         ) : (
-                          <span className="text-muted-foreground text-sm">N/A</span>
+                          <span className="text-muted-foreground">—</span>
                         )}
                       </td>
                       <td className="py-3 px-4">
@@ -366,7 +275,7 @@ export function UsersPage() {
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
                             <DropdownMenuItem onClick={() => openEditDialog(user)}>
-                              Edit Role &amp; Division
+                              Edit Role
                             </DropdownMenuItem>
                             <DropdownMenuItem onClick={() => handleToggleActive(user)}>
                               {user.isActive ? 'Deactivate' : 'Activate'}
@@ -383,7 +292,7 @@ export function UsersPage() {
         </CardContent>
       </Card>
 
-      {/* Edit Role & Division Dialog */}
+      {/* Edit Role Dialog */}
       <Dialog open={!!editUser} onOpenChange={(open) => { if (!open) setEditUser(null); }}>
         <DialogContent>
           <DialogHeader>
@@ -393,7 +302,7 @@ export function UsersPage() {
           <div className="space-y-4 py-4">
             <div>
               <Label>Role</Label>
-              <Select value={editForm.role} onValueChange={(v) => setEditForm({ ...editForm, role: v, vpRoleId: 'none' })}>
+              <Select value={editRole} onValueChange={setEditRole}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select role" />
                 </SelectTrigger>
@@ -404,28 +313,6 @@ export function UsersPage() {
                 </SelectContent>
               </Select>
             </div>
-            {needsVpRole(editForm.role) && (
-              <div>
-                <Label>VP Division</Label>
-                <Select value={editForm.vpRoleId} onValueChange={(v) => setEditForm({ ...editForm, vpRoleId: v })}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select division" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">-- None --</SelectItem>
-                    {getVpRolesForDropdown(editUser ?? undefined).map((role) => (
-                      <SelectItem key={role.id} value={role.id.toString()}>
-                        {role.title}
-                        {role.isTaken ? ` (${role.assignedName || 'taken'})` : ''}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground mt-1">
-                  This controls which division this user can review.
-                </p>
-              </div>
-            )}
             {editError && (
               <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded text-sm">
                 {editError}

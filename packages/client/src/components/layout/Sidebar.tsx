@@ -77,7 +77,7 @@ export function Sidebar() {
               label: 'Users',
               href: '/users',
               icon: Users,
-              roles: ['system_admin'],
+              roles: ['system_admin', 'hr_admin'],
             },
           ],
         },

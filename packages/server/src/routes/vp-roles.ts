@@ -78,7 +78,7 @@ vpRolesRouter.get('/:id', (req: Request, res: Response) => {
 // Assign email to VP role
 const assignSchema = z.object({
   email: z.string().email().nullable(),
-  name: z.string().min(1).nullable(),
+  name: z.string().nullable().optional(),
 });
 
 vpRolesRouter.post('/:id/assign', requireUserManagement, (req: Request, res: Response) => {
@@ -86,7 +86,7 @@ vpRolesRouter.post('/:id/assign', requireUserManagement, (req: Request, res: Res
   const roleId = parseInt(req.params.id);
   
   // Verify role exists
-  const role = dbGet<{ id: number }>('SELECT id FROM vp_roles WHERE id = ?', [roleId]);
+  const role = dbGet<{ id: number; assigned_name: string | null }>('SELECT id, assigned_name FROM vp_roles WHERE id = ?', [roleId]);
   if (!role) throw new NotFoundError('VP Role not found');
   
   // If this email is assigned to another role, clear that assignment first
@@ -97,10 +97,13 @@ vpRolesRouter.post('/:id/assign', requireUserManagement, (req: Request, res: Res
     );
   }
   
+  // Use provided name, or keep existing name if not supplied, or derive from email prefix
+  const resolvedName = name !== undefined ? name : (role.assigned_name ?? email?.split('@')[0] ?? null);
+  
   // Update the role assignment
   dbRun(
     'UPDATE vp_roles SET assigned_email = ?, assigned_name = ? WHERE id = ?',
-    [email?.toLowerCase() || null, name, roleId]
+    [email?.toLowerCase() || null, resolvedName, roleId]
   );
   
   // Return updated role

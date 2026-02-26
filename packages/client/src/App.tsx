@@ -37,7 +37,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 function AdminRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
 
-  if (user?.role !== 'system_admin') {
+  if (!user || !['system_admin', 'hr_admin'].includes(user.role)) {
     return <Navigate to="/" replace />;
   }
 
