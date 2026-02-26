@@ -143,6 +143,18 @@ export function findOrCreateSamlUser(profile: Profile): { user: User; token: str
       }
     }
 
+    // Auto-assign division from vp_roles if user has none but an assignment exists
+    if (!dbUser.division) {
+      const vpRole = dbGet<{ code: string }>(
+        'SELECT code FROM vp_roles WHERE LOWER(assigned_email) = LOWER(?)',
+        [attrs.email]
+      );
+      if (vpRole?.code) {
+        dbRun('UPDATE users SET division = ? WHERE id = ?', [vpRole.code, dbUser.id]);
+        dbUser.division = vpRole.code;
+      }
+    }
+
     if (!dbUser.is_active) {
       throw new Error('Account is disabled');
     }
@@ -150,9 +162,16 @@ export function findOrCreateSamlUser(profile: Profile): { user: User; token: str
     // Create new user from SAML attributes
     const role = attrs.groups.length > 0 ? mapGroupsToRole(attrs.groups) : SAML_CONFIG.defaultRole;
 
+    // Auto-assign division from vp_roles if this email is already mapped
+    const vpRole = dbGet<{ code: string }>(
+      'SELECT code FROM vp_roles WHERE LOWER(assigned_email) = LOWER(?)',
+      [attrs.email]
+    );
+    const division = vpRole?.code || null;
+
     const result = dbRun(
-      'INSERT INTO users (email, password_hash, name, role, division, okta_id, auth_provider) VALUES (?, NULL, ?, ?, NULL, ?, ?)',
-      [attrs.email, attrs.name, role, attrs.oktaId, 'okta']
+      'INSERT INTO users (email, password_hash, name, role, division, okta_id, auth_provider) VALUES (?, NULL, ?, ?, ?, ?, ?)',
+      [attrs.email, attrs.name, role, division, attrs.oktaId, 'okta']
     );
 
     dbUser = {
@@ -160,7 +179,7 @@ export function findOrCreateSamlUser(profile: Profile): { user: User; token: str
       email: attrs.email,
       name: attrs.name,
       role: role,
-      division: null,
+      division: division,
       is_active: 1,
       created_at: new Date().toISOString(),
       okta_id: attrs.oktaId,
